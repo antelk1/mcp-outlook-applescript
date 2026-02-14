@@ -1,0 +1,48 @@
+/** Domain types for all Outlook entity categories. */
+
+// Mail types
+export {
+    SpecialFolderType,
+    type SpecialFolderTypeValue,
+    Priority,
+    type PriorityValue,
+    FlagStatus,
+    type FlagStatusValue,
+    type Folder,
+    type EmailSummary,
+    type Email,
+    type AttachmentInfo,
+    type UnreadCount,
+} from './mail.js';
+
+// Calendar types
+export {
+    type CalendarFolder,
+    type EventSummary,
+    type Event,
+    type Attendee,
+    AttendeeStatus,
+} from './calendar.js';
+
+// Contact types
+export {
+    ContactType,
+    type ContactTypeValue,
+    type ContactSummary,
+    type Contact,
+    type ContactEmail,
+    EmailType,
+    type ContactPhone,
+    PhoneType,
+    type ContactAddress,
+    AddressType,
+} from './contacts.js';
+
+// Task types
+export { type TaskSummary, type Task } from './tasks.js';
+
+// Note types
+export { type NoteSummary, type Note } from './notes.js';
+
+// Pagination
+export { type PaginatedResult, paginate } from './pagination.js';
