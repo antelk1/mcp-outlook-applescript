@@ -1,16 +1,23 @@
 /**
- * Unit tests for the 4 bug fixes in mcp-outlook-applescript.
+ * Unit tests for mcp-outlook-applescript.
  *
- * These tests validate generated AppleScript strings and parser behaviour
- * WITHOUT requiring Microsoft Outlook to be running.
+ * Validates generated AppleScript strings, parser behaviour, pagination helpers,
+ * search optimizations, date filtering, deduplication, and security-critical
+ * escaping — all WITHOUT requiring Microsoft Outlook to be running.
  *
- * Bug 1: setMessageFlag -- invalid AppleScript enum syntax
- * Bug 2: listTasks     -- double "is" in whose clause / isCompleted read-back
- * Bug 3: listEventsByDateRange -- timeout due to fetching 1000 events
- * Bug 4: flagStatus read-back  -- listMessages/getMessage/searchMessages/parser
+ * Test groups:
+ *   - Bug fixes (setMessageFlag, listTasks, listEventsByDateRange, flagStatus)
+ *   - Pagination envelope (paginate helper)
+ *   - AppleScript offset support (searchMessages, searchContacts, searchTasks, etc.)
+ *   - Date filtering (listMessages, searchMessages, searchEvents)
+ *   - Search optimizations (no matchedIds, phase 2 skip, no preview, phase 2 counter)
+ *   - Deduplication (deduplicateEmailRows)
+ *   - Timeout scaling (searchTimeoutMs)
+ *   - Security (escapeForAppleScript, sendEmail template escaping)
+ *   - Parsers (parseEmails, parseTasks, parseEvents, mutation results)
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Imports under test
@@ -30,17 +37,30 @@ import {
   searchNotes,
   listEvents,
   buildAppleScriptDateVar,
+  sendEmail,
+  setMessageCategories,
+  createMailFolder,
 } from '../src/applescript/scripts.js';
+
+// executor.ts -- security-critical escaping
+import { escapeForAppleScript } from '../src/applescript/executor.js';
 
 // parser.ts exports pure parsing functions
 import {
   parseEmails,
   parseEmail,
+  parseTasks,
+  parseEvents,
+  parseSendEmailResult,
+  parseDeleteEventResult,
 } from '../src/applescript/parser.js';
 
 // repository.ts -- exported helpers for testing
-import { AppleScriptRepository, deduplicateEmailRows, searchTimeoutMs } from '../src/applescript/repository.js';
+import { deduplicateEmailRows, searchTimeoutMs } from '../src/applescript/repository.js';
 import type { EmailRow } from '../src/database/repository.js';
+
+// date utilities
+import { isoToAppleTimestamp, appleTimestampToIso } from '../src/utils/dates.js';
 
 // pagination
 import { paginate } from '../src/types/pagination.js';
@@ -765,5 +785,274 @@ describe('searchMessages phase 2 uses independent counter', () => {
   it('clamps phase2Skip to 0 when negative', () => {
     const script = searchMessages('test', null, 10, 25);
     expect(script).toContain('if phase2Skip < 0 then set phase2Skip to 0');
+  });
+});
+
+// =============================================================================
+// Security: escapeForAppleScript
+// =============================================================================
+
+describe('escapeForAppleScript', () => {
+  it('returns plain text unchanged', () => {
+    expect(escapeForAppleScript('hello world')).toBe('hello world');
+  });
+
+  it('escapes double quotes', () => {
+    expect(escapeForAppleScript('say "hello"')).toBe('say \\"hello\\"');
+  });
+
+  it('escapes backslashes', () => {
+    expect(escapeForAppleScript('path\\to\\file')).toBe('path\\\\to\\\\file');
+  });
+
+  it('converts \\n to AppleScript linefeed concatenation', () => {
+    // \n becomes " & linefeed & " — designed to be embedded inside a quoted string
+    expect(escapeForAppleScript('line1\nline2')).toBe('line1" & linefeed & "line2');
+  });
+
+  it('converts \\r\\n to AppleScript return concatenation', () => {
+    expect(escapeForAppleScript('line1\r\nline2')).toBe('line1" & return & "line2');
+  });
+
+  it('converts \\r to AppleScript return concatenation', () => {
+    expect(escapeForAppleScript('line1\rline2')).toBe('line1" & return & "line2');
+  });
+
+  it('handles combined quotes and backslashes', () => {
+    const input = 'He said "C:\\Users"';
+    const result = escapeForAppleScript(input);
+    expect(result).toContain('\\"C:\\\\Users\\"');
+  });
+
+  it('handles empty string', () => {
+    expect(escapeForAppleScript('')).toBe('');
+  });
+});
+
+// =============================================================================
+// Security: sendEmail template escaping
+// =============================================================================
+
+describe('sendEmail template escaping', () => {
+  it('escapes subject with quotes', () => {
+    const script = sendEmail({
+      to: ['test@example.com'],
+      subject: 'He said "hello"',
+      body: 'body',
+      bodyType: 'plain',
+    });
+    // escapeForAppleScript turns " into \" — so the AppleScript string contains \"
+    expect(script).toContain('He said \\"hello\\"');
+  });
+
+  it('escapes all recipient email addresses', () => {
+    const script = sendEmail({
+      to: ['to@example.com'],
+      cc: ['cc@example.com'],
+      bcc: ['bcc@example.com'],
+      subject: 'test',
+      body: 'body',
+      bodyType: 'plain',
+    });
+    expect(script).toContain('to@example.com');
+    expect(script).toContain('cc@example.com');
+    expect(script).toContain('bcc@example.com');
+  });
+
+  it('escapes attachment paths', () => {
+    const script = sendEmail({
+      to: ['test@example.com'],
+      subject: 'test',
+      body: 'body',
+      bodyType: 'plain',
+      attachments: [{ path: '/Users/test/file with spaces.pdf' }],
+    });
+    expect(script).toContain('POSIX file');
+    expect(script).toContain('file with spaces.pdf');
+  });
+
+  it('escapes replyTo address', () => {
+    const script = sendEmail({
+      to: ['test@example.com'],
+      subject: 'test',
+      body: 'body',
+      bodyType: 'plain',
+      replyTo: 'reply@example.com',
+    });
+    expect(script).toContain('reply to');
+    expect(script).toContain('reply@example.com');
+  });
+
+  it('uses html content property for html bodyType', () => {
+    const script = sendEmail({
+      to: ['test@example.com'],
+      subject: 'test',
+      body: '<h1>Hello</h1>',
+      bodyType: 'html',
+    });
+    expect(script).toContain('html content:');
+  });
+
+  it('uses plain text content property for plain bodyType', () => {
+    const script = sendEmail({
+      to: ['test@example.com'],
+      subject: 'test',
+      body: 'Hello',
+      bodyType: 'plain',
+    });
+    expect(script).toContain('plain text content:');
+  });
+});
+
+// =============================================================================
+// setMessageCategories template
+// =============================================================================
+
+describe('setMessageCategories', () => {
+  it('converts array to AppleScript list', () => {
+    const script = setMessageCategories(42, ['Work', 'Urgent']);
+    expect(script).toContain('{\"Work\", \"Urgent\"}');
+    expect(script).toContain('message id 42');
+  });
+
+  it('escapes category names with quotes', () => {
+    const script = setMessageCategories(1, ['Category "A"']);
+    expect(script).toContain('\\"A\\"');
+  });
+});
+
+// =============================================================================
+// createMailFolder template
+// =============================================================================
+
+describe('createMailFolder', () => {
+  it('creates at root when no parent specified', () => {
+    const script = createMailFolder('New Folder', undefined);
+    expect(script).toContain('make new mail folder with properties');
+    expect(script).not.toContain('mail folder id');
+  });
+
+  it('creates inside parent when parentFolderId specified', () => {
+    const script = createMailFolder('Subfolder', 42);
+    expect(script).toContain('mail folder id 42');
+    expect(script).toContain('make new mail folder at parentFolder');
+  });
+});
+
+// =============================================================================
+// Parser: parseTasks
+// =============================================================================
+
+describe('parseTasks', () => {
+  it('parses task with isCompleted true', () => {
+    const output = '{{RECORD}}id{{=}}1{{FIELD}}name{{=}}Buy milk{{FIELD}}dueDate{{=}}2025-06-15T00:00:00{{FIELD}}isCompleted{{=}}true';
+    const tasks = parseTasks(output);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].id).toBe(1);
+    expect(tasks[0].name).toBe('Buy milk');
+    expect(tasks[0].isCompleted).toBe(true);
+  });
+
+  it('parses task with isCompleted false', () => {
+    const output = '{{RECORD}}id{{=}}2{{FIELD}}name{{=}}Do laundry{{FIELD}}isCompleted{{=}}false';
+    const tasks = parseTasks(output);
+    expect(tasks[0].isCompleted).toBe(false);
+  });
+
+  it('parses multiple tasks', () => {
+    const output = '{{RECORD}}id{{=}}1{{FIELD}}name{{=}}Task A{{RECORD}}id{{=}}2{{FIELD}}name{{=}}Task B';
+    const tasks = parseTasks(output);
+    expect(tasks).toHaveLength(2);
+  });
+
+  it('returns empty array for empty input', () => {
+    expect(parseTasks('')).toHaveLength(0);
+  });
+});
+
+// =============================================================================
+// Parser: parseEvents
+// =============================================================================
+
+describe('parseEvents', () => {
+  it('parses event with all fields', () => {
+    const output = '{{RECORD}}id{{=}}100{{FIELD}}subject{{=}}Team Standup{{FIELD}}startTime{{=}}2025-06-15T10:00:00{{FIELD}}endTime{{=}}2025-06-15T10:30:00{{FIELD}}location{{=}}Room 5{{FIELD}}isAllDay{{=}}false{{FIELD}}isRecurring{{=}}true';
+    const events = parseEvents(output);
+    expect(events).toHaveLength(1);
+    expect(events[0].id).toBe(100);
+    expect(events[0].subject).toBe('Team Standup');
+    expect(events[0].isRecurring).toBe(true);
+  });
+
+  it('returns empty array for empty input', () => {
+    expect(parseEvents('')).toHaveLength(0);
+  });
+});
+
+// =============================================================================
+// Parser: mutation results
+// =============================================================================
+
+describe('parseSendEmailResult', () => {
+  it('parses success result', () => {
+    const output = '{{RECORD}}success{{=}}true{{FIELD}}messageId{{=}}12345{{FIELD}}sentAt{{=}}2025-06-15T10:00:00';
+    const result = parseSendEmailResult(output);
+    expect(result).not.toBeNull();
+    expect(result!.success).toBe(true);
+    expect(result!.messageId).toBe('12345');
+  });
+
+  it('parses failure result', () => {
+    const output = '{{RECORD}}success{{=}}false{{FIELD}}error{{=}}Network error';
+    const result = parseSendEmailResult(output);
+    expect(result).not.toBeNull();
+    expect(result!.success).toBe(false);
+    expect(result!.error).toBe('Network error');
+  });
+});
+
+describe('parseDeleteEventResult', () => {
+  it('parses success result', () => {
+    const output = '{{RECORD}}success{{=}}true{{FIELD}}eventId{{=}}999';
+    const result = parseDeleteEventResult(output);
+    expect(result).not.toBeNull();
+    expect(result!.success).toBe(true);
+  });
+
+  it('parses failure result', () => {
+    const output = '{{RECORD}}success{{=}}false{{FIELD}}error{{=}}Event not found';
+    const result = parseDeleteEventResult(output);
+    expect(result!.success).toBe(false);
+    expect(result!.error).toBe('Event not found');
+  });
+});
+
+// =============================================================================
+// Date utilities
+// =============================================================================
+
+describe('isoToAppleTimestamp / appleTimestampToIso', () => {
+  it('round-trips a known date', () => {
+    const iso = '2025-06-15T14:30:00.000Z';
+    const apple = isoToAppleTimestamp(iso);
+    expect(apple).toBeGreaterThan(0);
+    const backToIso = appleTimestampToIso(apple);
+    expect(backToIso).toBe(iso);
+  });
+
+  it('returns null for null/undefined/empty ISO input', () => {
+    expect(isoToAppleTimestamp(null as unknown as string)).toBeNull();
+    expect(isoToAppleTimestamp(undefined as unknown as string)).toBeNull();
+    expect(isoToAppleTimestamp('')).toBeNull();
+  });
+
+  it('returns Apple epoch (2001-01-01) for timestamp 0', () => {
+    // 0 in Apple epoch = 2001-01-01T00:00:00.000Z, not null
+    expect(appleTimestampToIso(0)).toBe('2001-01-01T00:00:00.000Z');
+  });
+
+  it('returns null for null/undefined apple timestamp', () => {
+    expect(appleTimestampToIso(null)).toBeNull();
+    expect(appleTimestampToIso(undefined)).toBeNull();
   });
 });

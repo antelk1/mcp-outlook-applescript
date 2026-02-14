@@ -45,9 +45,9 @@ export const SearchEmailsInput = z.strictObject({
         .number()
         .int()
         .min(1)
-        .max(100)
+        .max(200)
         .default(25)
-        .describe('Maximum number of emails to return, 1-100 (e.g., 10). Defaults to 25 if omitted.'),
+        .describe('Maximum number of emails to return, 1-200 (e.g., 50). Defaults to 25 if omitted. Search results are metadata-only (~400 bytes each), so larger pages are efficient.'),
     offset: z.number().int().min(0).default(0).describe('Number of emails to skip for pagination (e.g., 25 for page 2). Defaults to 0 if omitted.'),
     after: z.string().optional().describe('Only include emails received on or after this ISO 8601 date (e.g., "2025-01-01T00:00:00Z"). If omitted, no start date filter.'),
     before: z.string().optional().describe('Only include emails received on or before this ISO 8601 date (e.g., "2025-12-31T23:59:59Z"). If omitted, no end date filter.'),
