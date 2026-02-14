@@ -75,7 +75,7 @@ To update: re-run `npm install -g github:hasan-imam/mcp-outlook-applescript`.
 npm install
 npm run build      # compile TypeScript → dist/
 npm run typecheck   # type-check without emitting
-npm test            # 46 unit tests
+npm test            # 121 unit tests
 bash scripts/audit.sh  # static quality audit (build, security, package, functional)
 ```
 

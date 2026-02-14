@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import {
     OutlookMcpError,
     ErrorCode,
@@ -51,11 +51,11 @@ export function executeAppleScript(script: string, options: ExecuteOptions = {})
         encoding: 'utf8' as const,
         timeout: timeoutMs,
         maxBuffer: 50 * 1024 * 1024, // 50MB for large results
-        stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'],
+        input: script,
     };
     try {
-        // Execute via osascript
-        const output = execSync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`, execOptions);
+        // Execute via osascript with script passed on stdin (no shell interpretation)
+        const output = execFileSync('osascript', [], execOptions);
         return {
             success: true,
             output: (output as string).trim(),
