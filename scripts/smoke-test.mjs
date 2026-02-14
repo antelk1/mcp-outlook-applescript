@@ -18,8 +18,8 @@ import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_PATH = join(__dirname, '..', 'dist', 'index.js');
 const TIMEOUT_MS = 30_000;
-const GLOBAL_TIMEOUT_MS = 300_000; // 5 min for full suite
-const SLOW_THRESHOLD_MS = 30_000;
+const GLOBAL_TIMEOUT_MS = 600_000; // 10 min for full suite (search tools can be slow)
+const SLOW_THRESHOLD_MS = 60_000;
 const FAKE_UUID = '00000000-0000-0000-0000-000000000000';
 
 // =============================================================================
@@ -92,14 +92,14 @@ function getStderr() {
     return Buffer.concat(stderrChunks).toString();
 }
 
-function request(method, params = {}) {
+function request(method, params = {}, timeoutMs = TIMEOUT_MS) {
     if (serverDead) return Promise.reject(new Error('Server is not running'));
     const id = nextId++;
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
             pending.delete(id);
             reject(new Error(`Timeout waiting for response to ${method} (id=${id})`));
-        }, TIMEOUT_MS);
+        }, timeoutMs);
         pending.set(id, { resolve, reject, timer });
         const line = JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n';
         serverProcess.stdin.write(line);
@@ -172,15 +172,16 @@ function skip(name, reason = '') {
  * @param {string} [opts.expectErrorContains]
  * @param {(parsed: any) => string|null} [opts.validate]
  * @param {boolean} [opts.rawTextResponse] - If true, don't try to JSON parse
+ * @param {number} [opts.timeoutMs] - Per-tool timeout in ms (default: TIMEOUT_MS)
  * @returns {Promise<any>}
  */
 async function testTool(displayName, toolName, args, opts = {}) {
-    const { expectError = false, expectErrorContains, validate, rawTextResponse = false } = opts;
+    const { expectError = false, expectErrorContains, validate, rawTextResponse = false, timeoutMs } = opts;
     const t0 = Date.now();
 
     let response;
     try {
-        response = await request('tools/call', { name: toolName, arguments: args });
+        response = await request('tools/call', { name: toolName, arguments: args }, timeoutMs ?? TIMEOUT_MS);
     } catch (err) {
         const elapsed = Date.now() - t0;
         if (expectError) {
@@ -537,8 +538,9 @@ async function run() {
         },
     });
 
-    // search_emails
+    // search_emails (two-phase search needs more time than default 30s)
     await testTool('search_emails', 'search_emails', { query: 'test', limit: 3 }, {
+        timeoutMs: 90_000,
         validate: (parsed) => {
             const envErr = validateEnvelope(parsed, 'search_emails');
             if (envErr) return envErr;
@@ -746,7 +748,9 @@ async function run() {
     });
 
     // Empty search results should return envelope with empty items, not error
+    // No-match query: phase 1 returns 0, phase 2 scans 500 messages (~60s) — needs generous timeout
     await testTool('search_emails (no match)', 'search_emails', { query: 'xyzzy_no_match_99' }, {
+        timeoutMs: 150_000,
         validate: (parsed) => {
             const envErr = validateEnvelope(parsed, 'search_emails (no match)');
             if (envErr) return envErr;
@@ -755,6 +759,7 @@ async function run() {
     });
 
     await testTool('search_events (no match)', 'search_events', { query: 'xyzzy_no_match_99' }, {
+        timeoutMs: 90_000,
         validate: (parsed) => {
             const envErr = validateEnvelope(parsed, 'search_events (no match)');
             if (envErr) return envErr;

@@ -136,10 +136,11 @@ export function deduplicateEmailRows(rows: EmailRow[]): EmailRow[] {
 
 /**
  * Calculate timeout for search operations, scaling with offset.
- * Base 60s + 10s per page (each page = 25 items), capped at 120s.
+ * Base 90s (phase 2 sender scan of 500 messages takes ~60s worst case, plus
+ * phase 1 whose clause and overhead). +10s per page after the first, capped at 150s.
  */
 export function searchTimeoutMs(offset: number): number {
-    return Math.min(120000, 60000 + Math.floor(offset / 25) * 10000);
+    return Math.min(150000, 90000 + Math.floor(offset / 25) * 10000);
 }
 
 export class AppleScriptRepository implements IWriteableRepository {

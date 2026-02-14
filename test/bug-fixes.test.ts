@@ -704,33 +704,33 @@ describe('deduplicateEmailRows', () => {
 // =============================================================================
 
 describe('searchTimeoutMs', () => {
-  it('returns 60s base for offset=0', () => {
-    expect(searchTimeoutMs(0)).toBe(60000);
+  it('returns 90s base for offset=0', () => {
+    expect(searchTimeoutMs(0)).toBe(90000);
   });
 
-  it('returns 70s for offset=25 (page 2)', () => {
-    expect(searchTimeoutMs(25)).toBe(70000);
+  it('returns 100s for offset=25 (page 2)', () => {
+    expect(searchTimeoutMs(25)).toBe(100000);
   });
 
-  it('returns 80s for offset=50 (page 3)', () => {
-    expect(searchTimeoutMs(50)).toBe(80000);
+  it('returns 110s for offset=50 (page 3)', () => {
+    expect(searchTimeoutMs(50)).toBe(110000);
   });
 
-  it('returns 90s for offset=75 (page 4)', () => {
-    expect(searchTimeoutMs(75)).toBe(90000);
+  it('returns 120s for offset=75 (page 4)', () => {
+    expect(searchTimeoutMs(75)).toBe(120000);
   });
 
-  it('caps at 120s for high offsets', () => {
-    expect(searchTimeoutMs(150)).toBe(120000);
-    expect(searchTimeoutMs(300)).toBe(120000);
-    expect(searchTimeoutMs(1000)).toBe(120000);
+  it('caps at 150s for high offsets', () => {
+    expect(searchTimeoutMs(150)).toBe(150000);
+    expect(searchTimeoutMs(300)).toBe(150000);
+    expect(searchTimeoutMs(1000)).toBe(150000);
   });
 
   it('handles fractional pages (offset not multiple of 25)', () => {
-    // offset=24 → Math.floor(24/25) = 0 → 60s
-    expect(searchTimeoutMs(24)).toBe(60000);
-    // offset=26 → Math.floor(26/25) = 1 → 70s
-    expect(searchTimeoutMs(26)).toBe(70000);
+    // offset=24 → Math.floor(24/25) = 0 → 90s
+    expect(searchTimeoutMs(24)).toBe(90000);
+    // offset=26 → Math.floor(26/25) = 1 → 100s
+    expect(searchTimeoutMs(26)).toBe(100000);
   });
 });
 
