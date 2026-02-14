@@ -119,6 +119,21 @@ function toNoteRow(asNote: AppleScriptNoteRow): NoteRow {
     };
 }
 
+/**
+ * Deduplicate email rows by ID, preserving first occurrence.
+ * searchMessages phases 1 and 2 may return overlapping results — this is
+ * intentional: doing dedup in TypeScript (O(n) via Set) instead of AppleScript
+ * (O(n × offset) via list scans) eliminates the main performance bottleneck.
+ */
+function deduplicateEmailRows(rows: EmailRow[]): EmailRow[] {
+    const seen = new Set<number>();
+    return rows.filter(r => {
+        if (seen.has(r.id)) return false;
+        seen.add(r.id);
+        return true;
+    });
+}
+
 export class AppleScriptRepository implements IWriteableRepository {
     private readonly folderCache = new Map<number, FolderRow>();
     private folderCacheExpiry = 0;
@@ -162,17 +177,17 @@ export class AppleScriptRepository implements IWriteableRepository {
     }
 
     searchEmails(query: string, limit: number, offset: number, after?: string, before?: string): EmailRow[] {
-        // Offset is handled natively in AppleScript (startIdx/endIdx on whose results)
         const script = scripts.searchMessages(query, null, limit, offset, after, before);
-        // Two-phase search (subject + sender scan) needs more time
-        const output = executeAppleScriptOrThrow(script, { timeoutMs: 60000 });
-        return parser.parseEmails(output).map(toEmailRow);
+        const timeoutMs = Math.min(120000, 60000 + Math.floor(offset / 25) * 10000);
+        const output = executeAppleScriptOrThrow(script, { timeoutMs });
+        return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
     }
 
     searchEmailsInFolder(folderId: number, query: string, limit: number, offset: number, after?: string, before?: string): EmailRow[] {
         const script = scripts.searchMessages(query, folderId, limit, offset, after, before);
-        const output = executeAppleScriptOrThrow(script, { timeoutMs: 60000 });
-        return parser.parseEmails(output).map(toEmailRow);
+        const timeoutMs = Math.min(120000, 60000 + Math.floor(offset / 25) * 10000);
+        const output = executeAppleScriptOrThrow(script, { timeoutMs });
+        return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
     }
 
     getEmail(id: number): EmailRow | undefined {

@@ -300,13 +300,74 @@ describe('Bug 4: searchMessages includes flagStatus in both phases', () => {
     // Should have the todo flag logic appearing twice (once per phase)
     const matches = script.match(/set f to \(todo flag of m\) as string/g);
     expect(matches).not.toBeNull();
-    expect(matches.length).toBe(2);
+    expect(matches!.length).toBe(2);
   });
 
   it('works with a folder ID specified', () => {
     const script = searchMessages('query', 42, 10);
     expect(script).toContain('of mail folder id 42');
     expect(script).toContain('flagStatus{{=}}" & mFlag');
+  });
+});
+
+// =============================================================================
+// search_emails performance optimizations
+// =============================================================================
+
+describe('searchMessages optimization: no matchedIds dedup in AppleScript', () => {
+  it('does NOT contain matchedIds list or "does not contain" check', () => {
+    const script = searchMessages('test', null, 10, 0);
+    expect(script).not.toContain('set matchedIds to');
+    expect(script).not.toContain('does not contain mId');
+  });
+
+  it('does NOT collect skipped IDs for dedup', () => {
+    const script = searchMessages('test', null, 10, 50);
+    // The old code had: "repeat with i from 1 to preEnd" to collect skipped IDs
+    expect(script).not.toContain('set end of matchedIds to id of item i of subjectMatches');
+  });
+});
+
+describe('searchMessages optimization: phase 2 skip when phase 1 sufficient', () => {
+  it('contains early return when phase 1 has enough results', () => {
+    const script = searchMessages('test', null, 25, 0);
+    expect(script).toContain('if phase1Total > (skipCount + maxResults)');
+    expect(script).toContain('return output');
+  });
+
+  it('uses skipCount and maxResults in the phase 2 skip check', () => {
+    const script = searchMessages('test', null, 10, 50);
+    expect(script).toContain('set maxResults to 10');
+    expect(script).toContain('set skipCount to 50');
+    expect(script).toContain('if phase1Total > (skipCount + maxResults)');
+  });
+});
+
+describe('searchMessages optimization: no preview in search results', () => {
+  it('uses set mPreview to "" instead of PREVIEW_EXTRACT_BLOCK', () => {
+    const script = searchMessages('test', null, 10, 0);
+    // Should NOT contain the "plain text content of m" pattern used by PREVIEW_EXTRACT_BLOCK
+    expect(script).not.toContain('plain text content of m');
+    // Should contain the empty preview assignment
+    expect(script).toContain('set mPreview to ""');
+  });
+
+  it('still includes preview field in output record', () => {
+    const script = searchMessages('test', null, 10, 0);
+    expect(script).toContain('preview{{=}}" & mPreview');
+  });
+});
+
+describe('listMessages still includes preview (500 chars)', () => {
+  it('includes PREVIEW_EXTRACT_BLOCK with plain text content of m', () => {
+    const script = listMessages(100, 10, 0, false);
+    expect(script).toContain('plain text content of m');
+  });
+
+  it('uses 500 char limit', () => {
+    const script = listMessages(100, 10, 0, false);
+    expect(script).toContain('> 500');
+    expect(script).toContain('text 1 thru 500');
   });
 });
 

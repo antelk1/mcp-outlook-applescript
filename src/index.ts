@@ -209,12 +209,12 @@ export function createServer(): McpServer {
     // Mail Tools
     // =========================================================================
 
-    server.tool('list_emails', 'List email summaries in a specific mail folder, ordered newest first. Returns {items, count, hasMore} — when hasMore is true, increment offset by limit to fetch the next page. Use after/before (ISO 8601) to filter by received date. Does not include the full email body — use get_email for that. Requires Outlook to be running.',
+    server.tool('list_emails', 'List email summaries in a specific mail folder, ordered newest first. Each result includes a 500-char body preview for browsing without needing get_email. Returns {items, count, hasMore} — when hasMore is true, increment offset by limit to fetch the next page. Use after/before (ISO 8601) to filter by received date. For full email content, use get_email. Requires Outlook to be running.',
         ListEmailsInput.shape,
         handle((args) => jsonResult(mailTools!.listEmails(args))),
     );
 
-    server.tool('search_emails', 'Search emails by matching the query against subject line, sender name, and short preview text. Does not search the full email body. Returns {items, count, hasMore} — increment offset by limit when hasMore is true. Use after/before (ISO 8601) to filter by received date. Use folder_id to scope to one folder. For full email content, call get_email on a matching ID.',
+    server.tool('search_emails', 'Search emails by matching the query against subject line and sender address. Returns metadata only (subject, sender, date, flags) — no body preview. For email content, call get_email on a matching ID. Returns {items, count, hasMore} — increment offset by limit when hasMore is true. Use after/before (ISO 8601) to filter by received date. Use folder_id to scope to one folder. Pagination is fast at any offset.',
         SearchEmailsInput.shape,
         handle((args) => jsonResult(mailTools!.searchEmails(args))),
     );

@@ -145,15 +145,18 @@ const CONTACT_LIST_OUTPUT = '"{{RECORD}}id{{=}}" & cId & "{{FIELD}}displayName{{
 
 /**
  * AppleScript block for safely extracting a truncated preview from an email.
- * The old pattern failed because `text 1 thru 200` throws when content is shorter
- * than 200 chars, and the fallback returned the FULL plain text content (unbounded).
- * This version always truncates to 200 chars max.
+ * The old pattern failed because `text 1 thru N` throws when content is shorter
+ * than N chars, and the fallback returned the FULL plain text content (unbounded).
+ * This version always truncates to 500 chars max.
+ *
+ * Used by listMessages only — searchMessages skips preview for performance
+ * (the LLM calls get_email for full content on interesting search results).
  */
 const PREVIEW_EXTRACT_BLOCK = `      set mPreview to ""
       try
         set rawContent to plain text content of m
-        if (count of rawContent) > 200 then
-          set mPreview to text 1 thru 200 of rawContent
+        if (count of rawContent) > 500 then
+          set mPreview to text 1 thru 500 of rawContent
         else
           set mPreview to rawContent
         end if
@@ -272,8 +275,15 @@ const SENDER_SCAN_LIMIT = 500;
  *   Phase 1 — subject matches via a safe WHERE clause
  *   Phase 2 — sender matches via a loop with try/catch protection
  *
+ * Performance optimizations:
+ *   - No matchedIds list or dedup in AppleScript — dedup by ID happens in TypeScript
+ *     (eliminates O(500 × offset) list scans and O(offset) Apple Events)
+ *   - Phase 2 is skipped entirely when phase 1 has enough results to cover the page
+ *   - No preview extraction — subject/sender/date is sufficient for search results;
+ *     the LLM calls get_email for full content on interesting matches
+ *
  * Offset is handled natively in AppleScript: phase 1 uses startIdx/endIdx on the
- * whose result list; phase 2 adjusts its skip count based on how many phase 1 covered.
+ * whose result list; phase 2 has its own skip counter independent of phase 1.
  * When after/before are provided, date filtering is applied in both phases.
  */
 export function searchMessages(query: string, folderId: number | null, limit: number, offset: number = 0, after?: string, before?: string): string {
@@ -312,7 +322,6 @@ export function searchMessages(query: string, folderId: number | null, limit: nu
     return `
 tell application "Microsoft Outlook"
   set output to ""
-  set matchedIds to {}
   set resultCount to 0
   set maxResults to ${limit}
   set skipCount to ${offset}
@@ -331,7 +340,6 @@ ${dateVarBlock}
       try
         set m to item i of subjectMatches
         set mId to id of m
-        set end of matchedIds to mId
         set mSubject to subject of m
         set mSender to ""
         try
@@ -346,7 +354,7 @@ ${dateVarBlock}
           set mDate to time received of m as «class isot» as string
         end try
         set mRead to is read of m
-${PREVIEW_EXTRACT_BLOCK}
+        set mPreview to ""
 ${FLAG_STATUS_BLOCK}
         set output to output & ${MESSAGE_SUMMARY_OUTPUT}
         set resultCount to resultCount + 1
@@ -354,18 +362,13 @@ ${FLAG_STATUS_BLOCK}
     end repeat
   end if
 
-  -- Collect IDs from skipped phase 1 items to avoid dupes in phase 2
-  if skipCount > 0 and phase1Total > 0 then
-    set preEnd to skipCount
-    if preEnd > phase1Total then set preEnd to phase1Total
-    repeat with i from 1 to preEnd
-      try
-        set end of matchedIds to id of item i of subjectMatches
-      end try
-    end repeat
+  -- Skip phase 2 if phase 1 has enough matches to cover this page + next
+  if phase1Total > (skipCount + maxResults) then
+    return output
   end if
 
   -- Phase 2: Sender matches (loop with try/catch for safety)
+  -- No dedup here — duplicates are removed in TypeScript (Set-based, O(1) per check)
   set phase2Skip to skipCount - phase1Total
   if phase2Skip < 0 then set phase2Skip to 0
   set phase2Skipped to 0
@@ -379,32 +382,29 @@ ${FLAG_STATUS_BLOCK}
       try
         set m to item i of allMsgs
         set mId to id of m
-        if matchedIds does not contain mId then
-          set mSender to ""
-          try
-            set mSender to address of sender of m
-          end try
-          if mSender contains "${escapedQuery}" then${phase2DateCheck}
-            if phase2Skipped < phase2Skip then
-              set phase2Skipped to phase2Skipped + 1
-            else
-              set end of matchedIds to mId
-              set mSubject to subject of m
-              set mSenderName to ""
-              try
-                set mSenderName to name of sender of m
-              end try
-              set mDate to ""
-              try
-                set mDate to time received of m as «class isot» as string
-              end try
-              set mRead to is read of m
-${PREVIEW_EXTRACT_BLOCK}
+        set mSender to ""
+        try
+          set mSender to address of sender of m
+        end try
+        if mSender contains "${escapedQuery}" then${phase2DateCheck}
+          if phase2Skipped < phase2Skip then
+            set phase2Skipped to phase2Skipped + 1
+          else
+            set mSubject to subject of m
+            set mSenderName to ""
+            try
+              set mSenderName to name of sender of m
+            end try
+            set mDate to ""
+            try
+              set mDate to time received of m as «class isot» as string
+            end try
+            set mRead to is read of m
+            set mPreview to ""
 ${FLAG_STATUS_BLOCK}
-              set output to output & ${MESSAGE_SUMMARY_OUTPUT}
-              set resultCount to resultCount + 1
-            end if${phase2DateCheckEnd}
-          end if
+            set output to output & ${MESSAGE_SUMMARY_OUTPUT}
+            set resultCount to resultCount + 1
+          end if${phase2DateCheckEnd}
         end if
       end try
     end repeat
