@@ -187,14 +187,13 @@ else
   fail "LICENSE file missing"
 fi
 
-# 14. README.md has no Graph API references outside changelog section
-# Exclude the "Changes from Upstream" section where Graph API removal is documented
-GRAPH_REFS=$(sed '/## Changes from Upstream/,$d' README.md 2>/dev/null | grep -ciE 'graph api|microsoft graph|device.code|device_code' || true)
+# 14. README.md has no Graph API references
+GRAPH_REFS=$(grep -ciE 'graph api|microsoft graph|device.code|device_code' README.md 2>/dev/null || true)
 GRAPH_REFS=$(echo "$GRAPH_REFS" | tr -d '[:space:]')
 if [ -z "$GRAPH_REFS" ] || [ "$GRAPH_REFS" -eq 0 ] 2>/dev/null; then
-  pass "README.md has no Graph API references (outside changelog)"
+  pass "README.md has no Graph API references"
 else
-  warn "README.md mentions Graph API $GRAPH_REFS time(s) outside changelog"
+  warn "README.md mentions Graph API $GRAPH_REFS time(s)"
 fi
 
 # 15. No Graph-related dependencies in package.json
