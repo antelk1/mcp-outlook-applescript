@@ -38,8 +38,9 @@ import {
   parseEmail,
 } from '../src/applescript/parser.js';
 
-// repository.ts -- we need AppleScriptRepository for Bug 3 tests
-import { AppleScriptRepository } from '../src/applescript/repository.js';
+// repository.ts -- exported helpers for testing
+import { AppleScriptRepository, deduplicateEmailRows, searchTimeoutMs } from '../src/applescript/repository.js';
+import type { EmailRow } from '../src/database/repository.js';
 
 // pagination
 import { paginate } from '../src/types/pagination.js';
@@ -619,5 +620,150 @@ describe('search_notes description fix', () => {
     expect(script).toContain('whose name contains');
     // Should NOT contain "content contains" or "plain text content contains"
     expect(script).not.toContain('content contains');
+  });
+});
+
+// =============================================================================
+// deduplicateEmailRows
+// =============================================================================
+
+describe('deduplicateEmailRows', () => {
+  function makeRow(id: number, subject: string): EmailRow {
+    return {
+      id,
+      folderId: 0,
+      subject,
+      sender: '',
+      senderAddress: '',
+      recipients: '',
+      displayTo: '',
+      toAddresses: '',
+      ccAddresses: '',
+      preview: '',
+      isRead: 0,
+      timeReceived: 0,
+      timeSent: 0,
+      hasAttachment: 0,
+      size: 0,
+      priority: 0,
+      flagStatus: 0,
+      categories: null,
+      messageId: null,
+      conversationId: null,
+      dataFilePath: '',
+    };
+  }
+
+  it('removes duplicate IDs, preserving first occurrence', () => {
+    const rows = [
+      makeRow(1, 'First'),
+      makeRow(2, 'Second'),
+      makeRow(1, 'First duplicate'),
+      makeRow(3, 'Third'),
+      makeRow(2, 'Second duplicate'),
+    ];
+    const result = deduplicateEmailRows(rows);
+    expect(result).toHaveLength(3);
+    expect(result[0].subject).toBe('First');
+    expect(result[1].subject).toBe('Second');
+    expect(result[2].subject).toBe('Third');
+  });
+
+  it('returns all rows when no duplicates', () => {
+    const rows = [makeRow(1, 'A'), makeRow(2, 'B'), makeRow(3, 'C')];
+    const result = deduplicateEmailRows(rows);
+    expect(result).toHaveLength(3);
+  });
+
+  it('handles empty array', () => {
+    const result = deduplicateEmailRows([]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('handles single row', () => {
+    const result = deduplicateEmailRows([makeRow(42, 'Solo')]);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe(42);
+  });
+
+  it('preserves order of first occurrences', () => {
+    const rows = [
+      makeRow(3, 'Third-first'),
+      makeRow(1, 'First-first'),
+      makeRow(3, 'Third-dupe'),
+      makeRow(2, 'Second-first'),
+      makeRow(1, 'First-dupe'),
+    ];
+    const result = deduplicateEmailRows(rows);
+    expect(result.map(r => r.id)).toEqual([3, 1, 2]);
+  });
+});
+
+// =============================================================================
+// searchTimeoutMs
+// =============================================================================
+
+describe('searchTimeoutMs', () => {
+  it('returns 60s base for offset=0', () => {
+    expect(searchTimeoutMs(0)).toBe(60000);
+  });
+
+  it('returns 70s for offset=25 (page 2)', () => {
+    expect(searchTimeoutMs(25)).toBe(70000);
+  });
+
+  it('returns 80s for offset=50 (page 3)', () => {
+    expect(searchTimeoutMs(50)).toBe(80000);
+  });
+
+  it('returns 90s for offset=75 (page 4)', () => {
+    expect(searchTimeoutMs(75)).toBe(90000);
+  });
+
+  it('caps at 120s for high offsets', () => {
+    expect(searchTimeoutMs(150)).toBe(120000);
+    expect(searchTimeoutMs(300)).toBe(120000);
+    expect(searchTimeoutMs(1000)).toBe(120000);
+  });
+
+  it('handles fractional pages (offset not multiple of 25)', () => {
+    // offset=24 → Math.floor(24/25) = 0 → 60s
+    expect(searchTimeoutMs(24)).toBe(60000);
+    // offset=26 → Math.floor(26/25) = 1 → 70s
+    expect(searchTimeoutMs(26)).toBe(70000);
+  });
+});
+
+// =============================================================================
+// Phase 2 independent counter (over-counting fix)
+// =============================================================================
+
+describe('searchMessages phase 2 uses independent counter', () => {
+  it('uses phase2Count instead of resultCount in phase 2 loop exit', () => {
+    const script = searchMessages('test', null, 10, 0);
+    const phase2Marker = '-- Phase 2: Sender matches';
+    const phase2Section = script.slice(script.indexOf(phase2Marker));
+    // Phase 2 should use its own counter
+    expect(phase2Section).toContain('set phase2Count to 0');
+    expect(phase2Section).toContain('if phase2Count ≥ maxResults then exit repeat');
+    expect(phase2Section).toContain('set phase2Count to phase2Count + 1');
+  });
+
+  it('does NOT use shared resultCount in phase 2 loop body', () => {
+    const script = searchMessages('test', null, 10, 0);
+    const phase2Marker = '-- Phase 2: Sender matches';
+    const phase2Section = script.slice(script.indexOf(phase2Marker));
+    // Phase 2 should NOT increment the shared resultCount
+    expect(phase2Section).not.toContain('set resultCount to resultCount + 1');
+  });
+
+  it('still uses resultCount gate to skip phase 2 when phase 1 filled the page', () => {
+    const script = searchMessages('test', null, 10, 0);
+    expect(script).toContain('if resultCount < maxResults then');
+  });
+
+  it('clamps phase2Skip to 0 when negative', () => {
+    const script = searchMessages('test', null, 10, 25);
+    expect(script).toContain('if phase2Skip < 0 then set phase2Skip to 0');
   });
 });

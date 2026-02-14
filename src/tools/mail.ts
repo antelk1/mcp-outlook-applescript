@@ -34,7 +34,7 @@ export const ListEmailsInput = z.strictObject({
 });
 
 export const SearchEmailsInput = z.strictObject({
-    query: z.string().min(1).describe('Search query text matched against subject, sender, and preview (e.g., "invoice")'),
+    query: z.string().min(1).describe('Search query text matched against subject and sender address (e.g., "invoice")'),
     folder_id: z
         .number()
         .int()

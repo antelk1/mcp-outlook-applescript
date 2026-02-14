@@ -368,17 +368,23 @@ ${FLAG_STATUS_BLOCK}
   end if
 
   -- Phase 2: Sender matches (loop with try/catch for safety)
-  -- No dedup here — duplicates are removed in TypeScript (Set-based, O(1) per check)
+  -- Uses its own counter (phase2Count) independent of phase 1's resultCount.
+  -- This prevents duplicates (messages matching both subject and sender) from
+  -- consuming phase 2 slots and causing under-fetch after TS-side dedup.
+  -- Note: phase2Skip counts raw sender matches to skip, not sender-only matches.
+  -- When subject/sender overlaps exist in the skip window, effective page boundaries
+  -- may shift slightly. This is acceptable for search pagination.
   set phase2Skip to skipCount - phase1Total
   if phase2Skip < 0 then set phase2Skip to 0
   set phase2Skipped to 0
+  set phase2Count to 0
 
   if resultCount < maxResults then
     set allMsgs to messages ${folderClause}
     set scanLimit to count of allMsgs
     if scanLimit > ${SENDER_SCAN_LIMIT} then set scanLimit to ${SENDER_SCAN_LIMIT}
     repeat with i from 1 to scanLimit
-      if resultCount ≥ maxResults then exit repeat
+      if phase2Count ≥ maxResults then exit repeat
       try
         set m to item i of allMsgs
         set mId to id of m
@@ -403,7 +409,7 @@ ${FLAG_STATUS_BLOCK}
             set mPreview to ""
 ${FLAG_STATUS_BLOCK}
             set output to output & ${MESSAGE_SUMMARY_OUTPUT}
-            set resultCount to resultCount + 1
+            set phase2Count to phase2Count + 1
           end if${phase2DateCheckEnd}
         end if
       end try

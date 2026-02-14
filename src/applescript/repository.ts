@@ -125,13 +125,21 @@ function toNoteRow(asNote: AppleScriptNoteRow): NoteRow {
  * intentional: doing dedup in TypeScript (O(n) via Set) instead of AppleScript
  * (O(n × offset) via list scans) eliminates the main performance bottleneck.
  */
-function deduplicateEmailRows(rows: EmailRow[]): EmailRow[] {
+export function deduplicateEmailRows(rows: EmailRow[]): EmailRow[] {
     const seen = new Set<number>();
     return rows.filter(r => {
         if (seen.has(r.id)) return false;
         seen.add(r.id);
         return true;
     });
+}
+
+/**
+ * Calculate timeout for search operations, scaling with offset.
+ * Base 60s + 10s per page (each page = 25 items), capped at 120s.
+ */
+export function searchTimeoutMs(offset: number): number {
+    return Math.min(120000, 60000 + Math.floor(offset / 25) * 10000);
 }
 
 export class AppleScriptRepository implements IWriteableRepository {
@@ -178,15 +186,13 @@ export class AppleScriptRepository implements IWriteableRepository {
 
     searchEmails(query: string, limit: number, offset: number, after?: string, before?: string): EmailRow[] {
         const script = scripts.searchMessages(query, null, limit, offset, after, before);
-        const timeoutMs = Math.min(120000, 60000 + Math.floor(offset / 25) * 10000);
-        const output = executeAppleScriptOrThrow(script, { timeoutMs });
+        const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
         return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
     }
 
     searchEmailsInFolder(folderId: number, query: string, limit: number, offset: number, after?: string, before?: string): EmailRow[] {
         const script = scripts.searchMessages(query, folderId, limit, offset, after, before);
-        const timeoutMs = Math.min(120000, 60000 + Math.floor(offset / 25) * 10000);
-        const output = executeAppleScriptOrThrow(script, { timeoutMs });
+        const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
         return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
     }
 
