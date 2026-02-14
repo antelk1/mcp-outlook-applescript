@@ -1,0 +1,194 @@
+/**
+ * Custom error classes for the Outlook MCP server.
+ */
+/**
+ * Error codes for categorizing errors.
+ */
+export const ErrorCode = {
+    UNKNOWN: 'UNKNOWN',
+    VALIDATION_ERROR: 'VALIDATION_ERROR',
+    NOT_FOUND: 'NOT_FOUND',
+    OUTLOOK_NOT_RUNNING: 'OUTLOOK_NOT_RUNNING',
+    APPLESCRIPT_PERMISSION_DENIED: 'APPLESCRIPT_PERMISSION_DENIED',
+    APPLESCRIPT_TIMEOUT: 'APPLESCRIPT_TIMEOUT',
+    APPLESCRIPT_ERROR: 'APPLESCRIPT_ERROR',
+    ATTACHMENT_NOT_FOUND: 'ATTACHMENT_NOT_FOUND',
+    ATTACHMENT_TOO_LARGE: 'ATTACHMENT_TOO_LARGE',
+    ATTACHMENT_SAVE_ERROR: 'ATTACHMENT_SAVE_ERROR',
+    MAIL_SEND_ERROR: 'MAIL_SEND_ERROR',
+    APPROVAL_EXPIRED: 'APPROVAL_EXPIRED',
+    APPROVAL_INVALID: 'APPROVAL_INVALID',
+    TARGET_CHANGED: 'TARGET_CHANGED',
+};
+/**
+ * Base class for all Outlook MCP errors.
+ */
+export class OutlookMcpError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = this.constructor.name;
+        Error.captureStackTrace(this, this.constructor);
+    }
+}
+/**
+ * Generic wrapper for unexpected errors.
+ */
+export class UnknownError extends OutlookMcpError {
+    cause;
+    code = ErrorCode.UNKNOWN;
+    constructor(message, cause) {
+        super(message);
+        this.cause = cause;
+    }
+}
+/**
+ * Thrown for input validation errors.
+ */
+export class ValidationError extends OutlookMcpError {
+    code = ErrorCode.VALIDATION_ERROR;
+    constructor(message) {
+        super(message);
+    }
+}
+/**
+ * Thrown when a requested resource is not found.
+ */
+export class NotFoundError extends OutlookMcpError {
+    code = ErrorCode.NOT_FOUND;
+    constructor(resourceType, id) {
+        super(`${resourceType} with ID ${id} not found`);
+    }
+}
+/**
+ * Type guard to check if an error is an OutlookMcpError.
+ */
+export function isOutlookMcpError(error) {
+    return error instanceof OutlookMcpError;
+}
+/**
+ * Wraps an unknown error in an OutlookMcpError if needed.
+ */
+export function wrapError(error, defaultMessage) {
+    if (isOutlookMcpError(error)) {
+        return error;
+    }
+    if (error instanceof Error) {
+        return new UnknownError(error.message, error);
+    }
+    return new UnknownError(defaultMessage);
+}
+// =============================================================================
+// AppleScript Errors
+// =============================================================================
+/**
+ * Thrown when Outlook is not running and needs to be.
+ */
+export class OutlookNotRunningError extends OutlookMcpError {
+    code = ErrorCode.OUTLOOK_NOT_RUNNING;
+    constructor() {
+        super('Microsoft Outlook is not running. ' +
+            'Please start Outlook and try again.');
+    }
+}
+/**
+ * Thrown when AppleScript automation permission is denied.
+ */
+export class AppleScriptPermissionError extends OutlookMcpError {
+    code = ErrorCode.APPLESCRIPT_PERMISSION_DENIED;
+    constructor() {
+        super('Automation permission denied for Microsoft Outlook. ' +
+            'Please grant access in System Settings > Privacy & Security > Automation.');
+    }
+}
+/**
+ * Thrown when AppleScript execution times out.
+ */
+export class AppleScriptTimeoutError extends OutlookMcpError {
+    code = ErrorCode.APPLESCRIPT_TIMEOUT;
+    constructor(operation) {
+        super(`AppleScript operation timed out: ${operation}. ` +
+            'This may happen with large data sets. Try reducing the limit.');
+    }
+}
+/**
+ * Thrown for general AppleScript errors.
+ */
+export class AppleScriptError extends OutlookMcpError {
+    cause;
+    code = ErrorCode.APPLESCRIPT_ERROR;
+    constructor(message, cause) {
+        super(message);
+        this.cause = cause;
+    }
+}
+// =============================================================================
+// Attachment and Email Errors
+// =============================================================================
+/**
+ * Thrown when an attachment file cannot be found.
+ */
+export class AttachmentNotFoundError extends OutlookMcpError {
+    code = ErrorCode.ATTACHMENT_NOT_FOUND;
+    constructor(path) {
+        super(`Attachment file not found: ${path}. Please check the file path exists.`);
+    }
+}
+/**
+ * Thrown when an attachment exceeds the size limit.
+ */
+export class AttachmentTooLargeError extends OutlookMcpError {
+    code = ErrorCode.ATTACHMENT_TOO_LARGE;
+    constructor(name, sizeBytes, maxBytes) {
+        super(`Attachment "${name}" is ${Math.round(sizeBytes / 1024 / 1024)}MB ` +
+            `which exceeds the maximum size of ${Math.round(maxBytes / 1024 / 1024)}MB.`);
+    }
+}
+/**
+ * Thrown when saving an attachment to disk fails.
+ */
+export class AttachmentSaveError extends OutlookMcpError {
+    code = ErrorCode.ATTACHMENT_SAVE_ERROR;
+    constructor(name, reason) {
+        super(`Failed to save attachment "${name}": ${reason}`);
+    }
+}
+/**
+ * Thrown when sending an email fails.
+ */
+export class MailSendError extends OutlookMcpError {
+    code = ErrorCode.MAIL_SEND_ERROR;
+    constructor(reason) {
+        super(`Failed to send email: ${reason}`);
+    }
+}
+// =============================================================================
+// Approval Errors
+// =============================================================================
+/**
+ * Thrown when an approval token has expired.
+ */
+export class ApprovalExpiredError extends OutlookMcpError {
+    code = ErrorCode.APPROVAL_EXPIRED;
+    constructor() {
+        super('Approval token has expired. Please prepare the operation again.');
+    }
+}
+/**
+ * Thrown when an approval token is invalid.
+ */
+export class ApprovalInvalidError extends OutlookMcpError {
+    code = ErrorCode.APPROVAL_INVALID;
+    constructor(reason) {
+        super(`Invalid approval token: ${reason}`);
+    }
+}
+/**
+ * Thrown when the target has been modified since the approval was generated.
+ */
+export class TargetChangedError extends OutlookMcpError {
+    code = ErrorCode.TARGET_CHANGED;
+    constructor() {
+        super('The target has been modified since the approval was generated. ' +
+            'Please prepare the operation again.');
+    }
+}

@@ -231,15 +231,14 @@ echo ""
 echo "=== FUNCTIONAL (End User) ==="
 echo ""
 
-# 18. dist/ is gitignored (build artifacts don't belong in version control)
-if grep -q '^dist/' .gitignore 2>/dev/null; then
-  pass "dist/ is listed in .gitignore"
+# 18. dist/ is committed (needed for github: installs without build step)
+if [ -f dist/index.js ]; then
+  pass "dist/index.js exists (pre-built for github: installs)"
 else
-  fail "dist/ is not gitignored — build artifacts should not be committed"
+  fail "dist/index.js missing — run npm run build"
 fi
 
 # 19. Build produces valid output (shebang + syntax)
-# Since dist/ is gitignored, we build first, then verify
 if npm run build --silent 2>/dev/null; then
   if head -1 dist/index.js 2>/dev/null | grep -q '#!/usr/bin/env node'; then
     pass "dist/index.js has shebang after build"
