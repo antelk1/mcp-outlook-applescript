@@ -22,12 +22,23 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) server for Microsof
 | **Notes** | `list_notes`, `search_notes`, `get_note` |
 | **Accounts** | `list_accounts` |
 
-## Quick Start
+## Install
+
+```bash
+git clone https://github.com/hasan-imam/mcp-outlook-applescript.git
+cd mcp-outlook-applescript
+npm install && npm run build && npm pack && npm install -g mcp-outlook-applescript-*.tgz
+cd .. && rm -rf mcp-outlook-applescript
+```
+
+This installs `mcp-outlook-applescript` as a global command. The checkout can be deleted after install.
+
+To update, re-run the commands above.
 
 ### Claude Code
 
 ```bash
-claude mcp add outlook -- npx -y github:hasan-imam/mcp-outlook-applescript
+claude mcp add outlook -- mcp-outlook-applescript
 ```
 
 ### Claude Desktop
@@ -38,30 +49,11 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "outlook": {
-      "command": "npx",
-      "args": ["-y", "github:hasan-imam/mcp-outlook-applescript"]
+      "command": "mcp-outlook-applescript"
     }
   }
 }
 ```
-
-### From a Local Clone
-
-```bash
-git clone https://github.com/hasan-imam/mcp-outlook-applescript.git
-cd mcp-outlook-applescript
-npm install && npm run build
-claude mcp add outlook -- node /absolute/path/to/mcp-outlook-applescript/dist/index.js
-```
-
-### Global Install
-
-```bash
-npm install -g github:hasan-imam/mcp-outlook-applescript
-claude mcp add outlook -- mcp-outlook-applescript
-```
-
-To update: re-run `npm install -g github:hasan-imam/mcp-outlook-applescript`.
 
 ## Requirements
 
