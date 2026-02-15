@@ -1683,10 +1683,10 @@ ${accountStatement}
 ${attachmentStatements}
 ${inlineImageStatements}
 
+    -- Capture ID before send (reference becomes stale after send)
+    set msgId to "" & (id of newMessage)
     send newMessage
 
-    -- Get message ID and timestamp
-    set msgId to id of newMessage as string
     set sentTime to current date
     set sentISO to sentTime as «class isot» as string
 
