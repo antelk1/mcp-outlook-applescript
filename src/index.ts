@@ -214,7 +214,7 @@ export function createServer(): McpServer {
         handle((args) => jsonResult(mailTools!.listEmails(args))),
     );
 
-    server.tool('search_emails', 'Search emails by matching the query against subject line and sender address. Returns metadata only (subject, sender, date, flags) — no body preview. For email content, call get_email on a matching ID. Returns {items, count, hasMore} — increment offset by limit when hasMore is true. Use after/before (ISO 8601) to filter by received date. Use folder_id to scope to one folder. Pagination is fast at any offset.',
+    server.tool('search_emails', 'Search emails by matching the query against subject line and sender address. Set include_body_search to true to also search email body content (slower). Returns metadata only (subject, sender, date, flags) — no body preview. For email content, call get_email on a matching ID. Returns {items, count, hasMore} — increment offset by limit when hasMore is true. Use after/before (ISO 8601) to filter by received date. Use folder_id to scope to one folder. Pagination is fast at any offset.',
         SearchEmailsInput.shape,
         handle((args) => jsonResult(mailTools!.searchEmails(args))),
     );

@@ -34,7 +34,8 @@ export const ListEmailsInput = z.strictObject({
 });
 
 export const SearchEmailsInput = z.strictObject({
-    query: z.string().min(1).describe('Search query text matched against subject and sender address (e.g., "invoice")'),
+    query: z.string().min(1).describe('Search query text matched against subject and sender address (e.g., "invoice"). Also searches email body content when include_body_search is true.'),
+    include_body_search: z.boolean().default(false).describe('When true, also searches the email body content (slower — requires loading each message body). Defaults to false.'),
     folder_id: z
         .number()
         .int()
@@ -244,10 +245,10 @@ export class MailTools {
 
     /** Searches emails by subject, sender, or preview text, optionally scoped to a single folder and/or by date range. */
     searchEmails(params: SearchEmailsParams): PaginatedResult<EmailSummary> {
-        const { query, folder_id, limit, offset, after, before } = params;
+        const { query, folder_id, limit, offset, after, before, include_body_search } = params;
         const rows = folder_id != null
-            ? this.repository.searchEmailsInFolder(folder_id, query, limit + 1, offset, after, before)
-            : this.repository.searchEmails(query, limit + 1, offset, after, before);
+            ? this.repository.searchEmailsInFolder(folder_id, query, limit + 1, offset, after, before, include_body_search)
+            : this.repository.searchEmails(query, limit + 1, offset, after, before, include_body_search);
         return paginate(rows.map(transformEmailSummary), limit);
     }
 

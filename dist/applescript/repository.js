@@ -168,13 +168,13 @@ export class AppleScriptRepository {
         const output = executeAppleScriptOrThrow(script, { timeoutMs });
         return parser.parseEmails(output).map(toEmailRow);
     }
-    searchEmails(query, limit, offset, after, before) {
-        const script = scripts.searchMessages(query, null, limit, offset, after, before);
+    searchEmails(query, limit, offset, after, before, includeBodySearch) {
+        const script = scripts.searchMessages(query, null, limit, offset, after, before, includeBodySearch);
         const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
         return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
     }
-    searchEmailsInFolder(folderId, query, limit, offset, after, before) {
-        const script = scripts.searchMessages(query, folderId, limit, offset, after, before);
+    searchEmailsInFolder(folderId, query, limit, offset, after, before, includeBodySearch) {
+        const script = scripts.searchMessages(query, folderId, limit, offset, after, before, includeBodySearch);
         const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
         return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
     }

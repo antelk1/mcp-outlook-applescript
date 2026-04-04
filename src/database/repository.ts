@@ -86,8 +86,8 @@ export interface IRepository {
   getFolder(id: number): FolderRow | undefined;
   listEmails(folderId: number, limit: number, offset: number, after?: string, before?: string): EmailRow[];
   listUnreadEmails(folderId: number, limit: number, offset: number, after?: string, before?: string): EmailRow[];
-  searchEmails(query: string, limit: number, offset: number, after?: string, before?: string): EmailRow[];
-  searchEmailsInFolder(folderId: number, query: string, limit: number, offset: number, after?: string, before?: string): EmailRow[];
+  searchEmails(query: string, limit: number, offset: number, after?: string, before?: string, includeBodySearch?: boolean): EmailRow[];
+  searchEmailsInFolder(folderId: number, query: string, limit: number, offset: number, after?: string, before?: string, includeBodySearch?: boolean): EmailRow[];
   getEmail(id: number): EmailRow | undefined;
   getUnreadCount(): number;
   getUnreadCountByFolder(folderId: number): number;

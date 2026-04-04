@@ -286,7 +286,7 @@ const SENDER_SCAN_LIMIT = 500;
  * whose result list; phase 2 has its own skip counter independent of phase 1.
  * When after/before are provided, date filtering is applied in both phases.
  */
-export function searchMessages(query: string, folderId: number | null, limit: number, offset: number = 0, after?: string, before?: string): string {
+export function searchMessages(query: string, folderId: number | null, limit: number, offset: number = 0, after?: string, before?: string, includeBodySearch?: boolean): string {
     const escapedQuery = escapeForAppleScript(query);
     const folderClause = folderId != null ? `of mail folder id ${folderId}` : '';
     const hasDateFilter = after != null || before != null;
@@ -415,6 +415,74 @@ ${FLAG_STATUS_BLOCK}
       end try
     end repeat
   end if
+
+  ${includeBodySearch ? `-- Phase 3: Body content matches (slow — loads each message body)
+  -- Only runs when include_body_search is true. Scans messages and checks
+  -- if the body content contains the query. Skips messages already found
+  -- in phase 1 (subject) or phase 2 (sender) by tracking seen IDs.
+  set seenIds to {}
+  -- Collect IDs from existing results to avoid duplicates
+  set tidOutput to output
+  repeat
+    set oldDelims to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to "${DELIMITERS.FIELD}id${DELIMITERS.EQUALS}"
+    set chunks to text items of tidOutput
+    set AppleScript's text item delimiters to oldDelims
+    if (count of chunks) ≤ 1 then exit repeat
+    repeat with i from 2 to count of chunks
+      set chunk to item i of chunks
+      set oldDelims2 to AppleScript's text item delimiters
+      set AppleScript's text item delimiters to "${DELIMITERS.FIELD}"
+      try
+        set idVal to (text item 1 of chunk) as integer
+        set end of seenIds to idVal
+      end try
+      set AppleScript's text item delimiters to oldDelims2
+    end repeat
+    exit repeat
+  end repeat
+
+  set phase3Count to 0
+  set phase3Skip to 0
+  set totalPriorResults to resultCount + phase2Count
+  if totalPriorResults < maxResults then
+    set allMsgs3 to messages ${folderClause}
+    set scanLimit3 to count of allMsgs3
+    if scanLimit3 > ${SENDER_SCAN_LIMIT} then set scanLimit3 to ${SENDER_SCAN_LIMIT}
+    repeat with i from 1 to scanLimit3
+      if (totalPriorResults + phase3Count) ≥ maxResults then exit repeat
+      try
+        set m to item i of allMsgs3
+        set mId to id of m
+        -- Skip if already seen
+        if seenIds does not contain mId then${phase2DateCheck}
+          try
+            set mContent to content of m
+            if mContent contains "${escapedQuery}" then
+              set mSubject to subject of m
+              set mSender to ""
+              try
+                set mSender to address of sender of m
+              end try
+              set mSenderName to ""
+              try
+                set mSenderName to name of sender of m
+              end try
+              set mDate to ""
+              try
+                set mDate to time received of m as «class isot» as string
+              end try
+              set mRead to is read of m
+              set mPreview to ""
+${FLAG_STATUS_BLOCK}
+              set output to output & ${MESSAGE_SUMMARY_OUTPUT}
+              set phase3Count to phase3Count + 1
+            end if
+          end try${phase2DateCheckEnd}
+        end if
+      end try
+    end repeat
+  end if` : '-- Body search disabled (include_body_search is false)'}
 
   return output
 end tell

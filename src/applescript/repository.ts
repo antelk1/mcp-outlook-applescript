@@ -185,14 +185,14 @@ export class AppleScriptRepository implements IWriteableRepository {
         return parser.parseEmails(output).map(toEmailRow);
     }
 
-    searchEmails(query: string, limit: number, offset: number, after?: string, before?: string): EmailRow[] {
-        const script = scripts.searchMessages(query, null, limit, offset, after, before);
+    searchEmails(query: string, limit: number, offset: number, after?: string, before?: string, includeBodySearch?: boolean): EmailRow[] {
+        const script = scripts.searchMessages(query, null, limit, offset, after, before, includeBodySearch);
         const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
         return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
     }
 
-    searchEmailsInFolder(folderId: number, query: string, limit: number, offset: number, after?: string, before?: string): EmailRow[] {
-        const script = scripts.searchMessages(query, folderId, limit, offset, after, before);
+    searchEmailsInFolder(folderId: number, query: string, limit: number, offset: number, after?: string, before?: string, includeBodySearch?: boolean): EmailRow[] {
+        const script = scripts.searchMessages(query, folderId, limit, offset, after, before, includeBodySearch);
         const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
         return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
     }
