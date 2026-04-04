@@ -1,4 +1,7 @@
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { executeAppleScriptOrThrow } from './executor.js';
 import * as scripts from './scripts.js';
 import { parseSendEmailResult } from './parser.js';
@@ -28,37 +31,58 @@ export class AppleScriptMailSender {
                 }
             }
         }
-        let scriptParams = {
-            to: params.to,
-            subject: params.subject,
-            body: params.body,
-            bodyType: params.bodyType,
-        };
-        if (params.cc != null)
-            scriptParams = { ...scriptParams, cc: params.cc };
-        if (params.bcc != null)
-            scriptParams = { ...scriptParams, bcc: params.bcc };
-        if (params.replyTo != null)
-            scriptParams = { ...scriptParams, replyTo: params.replyTo };
-        if (params.attachments != null)
-            scriptParams = { ...scriptParams, attachments: params.attachments };
-        if (params.inlineImages != null)
-            scriptParams = { ...scriptParams, inlineImages: params.inlineImages };
-        if (params.accountId != null)
-            scriptParams = { ...scriptParams, accountId: params.accountId };
-        const script = scripts.sendEmail(scriptParams);
-        const output = executeAppleScriptOrThrow(script);
-        const result = parseSendEmailResult(output);
-        if (result == null) {
-            throw new AppleScriptError('Failed to parse send email response');
+        // For HTML bodies, write to a temp file so AppleScript can read it
+        // instead of embedding HTML in the AppleScript string literal (which
+        // breaks the parser on quotes, colons, and other special chars).
+        let bodyFilePath;
+        if (params.bodyType === 'html') {
+            const id = randomBytes(8).toString('hex');
+            bodyFilePath = join(tmpdir(), `mcp-outlook-html-${id}.html`);
+            writeFileSync(bodyFilePath, params.body, 'utf8');
         }
-        if (!result.success) {
-            throw new MailSendError(result.error ?? 'Unknown error');
+        try {
+            let scriptParams = {
+                to: params.to,
+                subject: params.subject,
+                body: params.body,
+                bodyType: params.bodyType,
+                ...(bodyFilePath != null && { bodyFilePath }),
+            };
+            if (params.cc != null)
+                scriptParams = { ...scriptParams, cc: params.cc };
+            if (params.bcc != null)
+                scriptParams = { ...scriptParams, bcc: params.bcc };
+            if (params.replyTo != null)
+                scriptParams = { ...scriptParams, replyTo: params.replyTo };
+            if (params.attachments != null)
+                scriptParams = { ...scriptParams, attachments: params.attachments };
+            if (params.inlineImages != null)
+                scriptParams = { ...scriptParams, inlineImages: params.inlineImages };
+            if (params.accountId != null)
+                scriptParams = { ...scriptParams, accountId: params.accountId };
+            const script = scripts.sendEmail(scriptParams);
+            const output = executeAppleScriptOrThrow(script);
+            const result = parseSendEmailResult(output);
+            if (result == null) {
+                throw new AppleScriptError('Failed to parse send email response');
+            }
+            if (!result.success) {
+                throw new MailSendError(result.error ?? 'Unknown error');
+            }
+            return {
+                messageId: result.messageId ?? '',
+                sentAt: result.sentAt ?? '',
+            };
         }
-        return {
-            messageId: result.messageId ?? '',
-            sentAt: result.sentAt ?? '',
-        };
+        finally {
+            // Clean up temp file
+            if (bodyFilePath != null) {
+                try {
+                    unlinkSync(bodyFilePath);
+                }
+                catch { /* ignore cleanup errors */ }
+            }
+        }
     }
 }
 /** Creates a new AppleScriptMailSender instance. */

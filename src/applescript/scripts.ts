@@ -92,6 +92,8 @@ export interface SendEmailParams {
         contentId: string;
     }[];
     readonly accountId?: number;
+    /** When set, AppleScript reads the HTML body from this file instead of embedding it inline. */
+    readonly bodyFilePath?: string;
 }
 
 // =============================================================================
@@ -1710,9 +1712,8 @@ end tell
  * Sends an email with optional CC, BCC, attachments, and account selection.
  */
 export function sendEmail(params: SendEmailParams): string {
-    const { to, subject, body, bodyType, cc, bcc, replyTo, attachments, inlineImages, accountId } = params;
+    const { to, subject, body, bodyType, cc, bcc, replyTo, attachments, inlineImages, accountId, bodyFilePath } = params;
     const escapedSubject = escapeForAppleScript(subject);
-    const escapedBody = escapeForAppleScript(body);
     const toRecipients = to.map(email => `    make new recipient at newMessage with properties {email address:{address:"${escapeForAppleScript(email)}"}}`).join('\n');
     const ccRecipients = cc != null && cc.length > 0
         ? cc.map(email => `    make new recipient at newMessage with properties {email address:{address:"${escapeForAppleScript(email)}"}, recipient type:recipient cc}`).join('\n')
@@ -1720,9 +1721,24 @@ export function sendEmail(params: SendEmailParams): string {
     const bccRecipients = bcc != null && bcc.length > 0
         ? bcc.map(email => `    make new recipient at newMessage with properties {email address:{address:"${escapeForAppleScript(email)}"}, recipient type:recipient bcc}`).join('\n')
         : '';
-    const contentProperty = bodyType === 'html'
-        ? `html content:"${escapedBody}"`
-        : `plain text content:"${escapedBody}"`;
+
+    // For HTML bodies, read from a temp file to avoid AppleScript string escaping issues.
+    // Plain text bodies are safe to embed inline.
+    let createMessageLine: string;
+    let setBodyStatement: string;
+    if (bodyType === 'html' && bodyFilePath != null) {
+        const escapedPath = escapeForAppleScript(bodyFilePath);
+        createMessageLine = `    set newMessage to make new outgoing message with properties {subject:"${escapedSubject}"}`;
+        setBodyStatement = `    set htmlBody to do shell script "cat " & quoted form of "${escapedPath}"\n    set content of newMessage to htmlBody`;
+    } else {
+        const escapedBody = escapeForAppleScript(body);
+        const contentProperty = bodyType === 'html'
+            ? `html content:"${escapedBody}"`
+            : `plain text content:"${escapedBody}"`;
+        createMessageLine = `    set newMessage to make new outgoing message with properties {subject:"${escapedSubject}", ${contentProperty}}`;
+        setBodyStatement = '';
+    }
+
     const replyToStatement = replyTo != null
         ? `    set reply to of newMessage to "${escapeForAppleScript(replyTo)}"`
         : '';
@@ -1741,7 +1757,8 @@ export function sendEmail(params: SendEmailParams): string {
     return `
 tell application "Microsoft Outlook"
   try
-    set newMessage to make new outgoing message with properties {subject:"${escapedSubject}", ${contentProperty}}
+${createMessageLine}
+${setBodyStatement}
 
 ${toRecipients}
 ${ccRecipients}
