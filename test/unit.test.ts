@@ -724,33 +724,31 @@ describe('deduplicateEmailRows', () => {
 // =============================================================================
 
 describe('searchTimeoutMs', () => {
-  it('returns 90s base for offset=0', () => {
-    expect(searchTimeoutMs(0)).toBe(90000);
+  // Capped at 50s so the server returns before the MCP client's ~60s
+  // request timeout. AppleScript has its own 45s `with timeout` internally.
+  it('returns 40s base for offset=0', () => {
+    expect(searchTimeoutMs(0)).toBe(40000);
   });
 
-  it('returns 100s for offset=25 (page 2)', () => {
-    expect(searchTimeoutMs(25)).toBe(100000);
+  it('returns 45s for offset=25 (page 2)', () => {
+    expect(searchTimeoutMs(25)).toBe(45000);
   });
 
-  it('returns 110s for offset=50 (page 3)', () => {
-    expect(searchTimeoutMs(50)).toBe(110000);
+  it('returns 50s for offset=50 (page 3)', () => {
+    expect(searchTimeoutMs(50)).toBe(50000);
   });
 
-  it('returns 120s for offset=75 (page 4)', () => {
-    expect(searchTimeoutMs(75)).toBe(120000);
-  });
-
-  it('caps at 150s for high offsets', () => {
-    expect(searchTimeoutMs(150)).toBe(150000);
-    expect(searchTimeoutMs(300)).toBe(150000);
-    expect(searchTimeoutMs(1000)).toBe(150000);
+  it('caps at 50s for high offsets', () => {
+    expect(searchTimeoutMs(75)).toBe(50000);
+    expect(searchTimeoutMs(150)).toBe(50000);
+    expect(searchTimeoutMs(1000)).toBe(50000);
   });
 
   it('handles fractional pages (offset not multiple of 25)', () => {
-    // offset=24 → Math.floor(24/25) = 0 → 90s
-    expect(searchTimeoutMs(24)).toBe(90000);
-    // offset=26 → Math.floor(26/25) = 1 → 100s
-    expect(searchTimeoutMs(26)).toBe(100000);
+    // offset=24 → Math.floor(24/25) = 0 → 40s
+    expect(searchTimeoutMs(24)).toBe(40000);
+    // offset=26 → Math.floor(26/25) = 1 → 45s
+    expect(searchTimeoutMs(26)).toBe(45000);
   });
 });
 

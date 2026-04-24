@@ -623,6 +623,25 @@ function resolveAccountIds(accountId: unknown, accountRepository: IAccountReposi
 async function main(): Promise<void> {
     const server = createServer();
     const transport = new StdioServerTransport();
+
+    // Lifecycle: exit cleanly on client disconnect or signals so we don't
+    // leave zombie Node processes after Claude Code sessions end.
+    const shutdown = (reason: string) => {
+        console.error(`[outlook-mcp] shutting down: ${reason}`);
+        process.exit(0);
+    };
+    transport.onclose = () => shutdown('transport closed');
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('uncaughtException', (err) => {
+        console.error('[outlook-mcp] uncaughtException:', err);
+        process.exit(1);
+    });
+    process.on('unhandledRejection', (err) => {
+        console.error('[outlook-mcp] unhandledRejection:', err);
+        process.exit(1);
+    });
+
     await server.connect(transport);
 }
 

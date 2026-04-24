@@ -122,7 +122,7 @@ AppleScript outputs are not JSON. Scripts emit records separated by `{{RECORD}}`
 - **`whose` clause limitations:** Works on scalar properties (subject, display name) but NOT on collection properties (email addresses, attachments). For collections, iterate with a loop and try/catch. See the `searchMessages` two-phase pattern: phase 1 filters by subject via `whose`, phase 2 scans for sender matches.
 - **`plain text content` is slow:** ~100ms per message. Only use in single-item `get_*` tools and `listMessages` (folder listing with preview), never in search results.
 - **Date construction:** Use component-based approach (`set year of d to X`, `set month of d to Y`, ...) for locale safety. See `buildAppleScriptDateVar()`. Setting day to 1 first avoids month-overflow bugs (e.g., setting month to February when day is 31).
-- **Timeout management:** Default is 30s. Date-range event queries use 60s. Search with large offset may need more. `searchTimeoutMs()` scales timeout based on offset.
+- **Timeout management:** Node-side default is 30s (45–60s for list/search). `searchTimeoutMs()` caps at 50s so the server returns before the MCP client's ~60s request timeout fires. The search AppleScript body is wrapped in `with timeout of 45 seconds` so Outlook returns a clean timeout error (−1712) instead of being SIGKILLed by Node — SIGKILL mid-conversation leaves Outlook's AppleScript bridge in a broken state and causes `Connection is invalid (−609)` on subsequent calls until Outlook self-heals (~10–30s).
 - **Flag enums:** Outlook uses `not completed` / `completed` / `not flagged` for todo flag (not `flag marked` / `flag complete`). The `is completed` property does not exist on task objects; use `todo flag is completed` instead.
 - **Apple epoch:** Outlook timestamps are seconds since 2001-01-01, not Unix epoch. Use `appleTimestampToIso()` / `isoToAppleTimestamp()`.
 
@@ -137,3 +137,9 @@ AppleScript outputs are not JSON. Scripts emit records separated by `{{RECORD}}`
 | `@types/node` (dev) | Node.js type definitions |
 
 No native dependencies. No network calls. No database.
+
+## Known issues
+
+- **Large mailboxes (50k+ messages) + unscoped search:** Phase 1 of `searchMessages` uses `messages whose subject contains …` with no `folder_id` — Outlook must scan every message. On an 84k-msg Inbox this approaches the 45s AppleScript timeout. Always pass `folder_id` and/or `after`/`before` when possible. `SENDER_SCAN_LIMIT` is capped at 200 for the same reason.
+- **Zombie server processes:** Prior to the 2026-04-24 fix, the server had no `transport.onclose`/`SIGTERM` handlers, so Node processes leaked after every Claude Code session that disconnected. If you see many instances in `pgrep -af mcp-outlook-applescript`, they are from old versions — rebuild and restart. Current code exits cleanly on transport close or signal.
+- **`osascript ETIMEDOUT` followed by `-609`:** If Node's sync `execFileSync` kills osascript mid-Apple-Event, Outlook's scripting bridge breaks briefly. Fix is the AppleScript-internal `with timeout` (above) which returns a clean error before Node's kill-timer fires. If you still see −609, wait 10–30s for Outlook to self-heal, then retry.

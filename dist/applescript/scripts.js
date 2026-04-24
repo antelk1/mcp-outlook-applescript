@@ -192,9 +192,9 @@ end tell
 }
 /**
  * Maximum number of messages to scan for sender-address matches.
- * Keeps execution within the 30s AppleScript timeout.
+ * Kept low so a 45s AppleScript timeout can cover large mailboxes.
  */
-const SENDER_SCAN_LIMIT = 500;
+const SENDER_SCAN_LIMIT = 200;
 /**
  * Searches messages by query.
  *
@@ -251,6 +251,7 @@ export function searchMessages(query, folderId, limit, offset = 0, after, before
           end if` : '';
     return `
 tell application "Microsoft Outlook"
+  with timeout of 45 seconds
   set output to ""
   set resultCount to 0
   set maxResults to ${limit}
@@ -415,6 +416,7 @@ ${FLAG_STATUS_BLOCK}
   end if` : '-- Body search disabled (include_body_search is false)'}
 
   return output
+  end timeout
 end tell
 `;
 }

@@ -136,11 +136,14 @@ export function deduplicateEmailRows(rows: EmailRow[]): EmailRow[] {
 
 /**
  * Calculate timeout for search operations, scaling with offset.
- * Base 90s (phase 2 sender scan of 500 messages takes ~60s worst case, plus
- * phase 1 whose clause and overhead). +10s per page after the first, capped at 150s.
+ * Capped at 50s so the server returns before the MCP client's ~60s request
+ * timeout fires. AppleScript has its own `with timeout of 45 seconds` inside
+ * the search script, so Outlook returns a clean timeout error rather than
+ * being SIGKILLed by Node (which corrupts the AppleScript bridge → -609 errors
+ * on subsequent calls).
  */
 export function searchTimeoutMs(offset: number): number {
-    return Math.min(150000, 90000 + Math.floor(offset / 25) * 10000);
+    return Math.min(50000, 40000 + Math.floor(offset / 25) * 5000);
 }
 
 export class AppleScriptRepository implements IWriteableRepository {
