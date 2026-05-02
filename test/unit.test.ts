@@ -724,31 +724,41 @@ describe('deduplicateEmailRows', () => {
 // =============================================================================
 
 describe('searchTimeoutMs', () => {
-  // Capped at 50s so the server returns before the MCP client's ~60s
-  // request timeout. AppleScript has its own 45s `with timeout` internally.
-  it('returns 40s base for offset=0', () => {
-    expect(searchTimeoutMs(0)).toBe(40000);
+  // Layered: AS-internal 55s < Node 65–80s < MCP client (~90s+). AS-internal
+  // fires first cleanly; Node's larger timeout is the safety net so it never
+  // SIGKILLs osascript mid-Apple-Event (which would corrupt the bridge).
+  it('returns 65s base for offset=0', () => {
+    expect(searchTimeoutMs(0)).toBe(65000);
   });
 
-  it('returns 45s for offset=25 (page 2)', () => {
-    expect(searchTimeoutMs(25)).toBe(45000);
+  it('returns 70s for offset=25 (page 2)', () => {
+    expect(searchTimeoutMs(25)).toBe(70000);
   });
 
-  it('returns 50s for offset=50 (page 3)', () => {
-    expect(searchTimeoutMs(50)).toBe(50000);
+  it('returns 75s for offset=50 (page 3)', () => {
+    expect(searchTimeoutMs(50)).toBe(75000);
   });
 
-  it('caps at 50s for high offsets', () => {
-    expect(searchTimeoutMs(75)).toBe(50000);
-    expect(searchTimeoutMs(150)).toBe(50000);
-    expect(searchTimeoutMs(1000)).toBe(50000);
+  it('caps at 80s for high offsets', () => {
+    expect(searchTimeoutMs(75)).toBe(80000);
+    expect(searchTimeoutMs(150)).toBe(80000);
+    expect(searchTimeoutMs(1000)).toBe(80000);
   });
 
   it('handles fractional pages (offset not multiple of 25)', () => {
-    // offset=24 → Math.floor(24/25) = 0 → 40s
-    expect(searchTimeoutMs(24)).toBe(40000);
-    // offset=26 → Math.floor(26/25) = 1 → 45s
-    expect(searchTimeoutMs(26)).toBe(45000);
+    // offset=24 → Math.floor(24/25) = 0 → 65s
+    expect(searchTimeoutMs(24)).toBe(65000);
+    // offset=26 → Math.floor(26/25) = 1 → 70s
+    expect(searchTimeoutMs(26)).toBe(70000);
+  });
+
+  it('always exceeds the AppleScript inner timeout (55s)', () => {
+    // Critical invariant: Node timeout MUST exceed the AS-internal timeout
+    // so the AS-internal timeout fires first, returning a clean -1712 error
+    // instead of Node SIGKILLing osascript and corrupting the bridge.
+    for (const offset of [0, 25, 50, 100, 1000]) {
+      expect(searchTimeoutMs(offset)).toBeGreaterThan(55000);
+    }
   });
 });
 

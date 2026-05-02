@@ -89,6 +89,40 @@ export function executeAppleScriptOrThrow(script: string, options: ExecuteOption
     return result.output;
 }
 
+/**
+ * Like executeAppleScriptOrThrow, but retries once on a clean AppleEvent timeout
+ * (-1712 from Outlook's `with timeout`) or generic timeout error.
+ *
+ * Outlook's first heavy AppleScript call after idle takes 30–45s while it pages
+ * in indexes; subsequent calls are 1–4s. This retry handles the cold start by
+ * issuing a cheap warm-up call (`tell app "Microsoft Outlook" to return name`)
+ * to ensure the bridge is responsive, then retrying the original script.
+ *
+ * Use only for read-only operations — never for mutations, where retry-after-
+ * timeout could double-apply.
+ */
+export function executeAppleScriptWithRetry(script: string, options: ExecuteOptions = {}): string {
+    const result = executeAppleScript(script, options);
+    if (result.success) {
+        return result.output;
+    }
+    const errorType = categorizeError(result.error ?? '');
+    const isTimeout = errorType === 'timeout' || /-1712|AppleEvent timed out|spawnSync osascript ETIMEDOUT/i.test(result.error ?? '');
+    if (!isTimeout) {
+        throw new AppleScriptExecutionError(result.error ?? 'Unknown error', errorType);
+    }
+    // Cold-start fallback: warm up the bridge, then retry once with the same timeout.
+    executeAppleScript(WARMUP_SCRIPT, { timeoutMs: 5000 });
+    const retry = executeAppleScript(script, options);
+    if (!retry.success) {
+        const retryType = categorizeError(retry.error ?? '');
+        throw new AppleScriptExecutionError(retry.error ?? 'Unknown error', retryType);
+    }
+    return retry.output;
+}
+
+const WARMUP_SCRIPT = `tell application "Microsoft Outlook" to return name`;
+
 export function isOutlookRunning(): boolean {
     const script = `
 tell application "System Events"

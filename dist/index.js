@@ -25,7 +25,7 @@ function errorResult(message) {
 export function createServer() {
     const server = new McpServer({
         name: 'outlook-mcp',
-        version: '1.1.1',
+        version: '1.2.0',
     });
     const tokenManager = new ApprovalTokenManager();
     let initialized = false;

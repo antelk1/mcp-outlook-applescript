@@ -113,7 +113,9 @@ tell application "Microsoft Outlook"
           set uCount to unread count of f
           set mCount to 0
           try
-            set mCount to count of messages of f
+            with timeout of 3 seconds
+              set mCount to count of messages of f
+            end timeout
           end try
           set output to output & "${DELIMITERS.RECORD}id${DELIMITERS.EQUALS}" & fId & "${DELIMITERS.FIELD}name${DELIMITERS.EQUALS}" & fName & "${DELIMITERS.FIELD}unreadCount${DELIMITERS.EQUALS}" & uCount & "${DELIMITERS.FIELD}messageCount${DELIMITERS.EQUALS}" & mCount & "${DELIMITERS.FIELD}accountId${DELIMITERS.EQUALS}" & accId
         end try
@@ -134,7 +136,9 @@ tell application "Microsoft Outlook"
           set uCount to unread count of f
           set mCount to 0
           try
-            set mCount to count of messages of f
+            with timeout of 3 seconds
+              set mCount to count of messages of f
+            end timeout
           end try
           set output to output & "${DELIMITERS.RECORD}id${DELIMITERS.EQUALS}" & fId & "${DELIMITERS.FIELD}name${DELIMITERS.EQUALS}" & fName & "${DELIMITERS.FIELD}unreadCount${DELIMITERS.EQUALS}" & uCount & "${DELIMITERS.FIELD}messageCount${DELIMITERS.EQUALS}" & mCount & "${DELIMITERS.FIELD}accountId${DELIMITERS.EQUALS}" & accId
         end try
@@ -155,7 +159,9 @@ tell application "Microsoft Outlook"
           set uCount to unread count of f
           set mCount to 0
           try
-            set mCount to count of messages of f
+            with timeout of 3 seconds
+              set mCount to count of messages of f
+            end timeout
           end try
           set output to output & "${DELIMITERS.RECORD}id${DELIMITERS.EQUALS}" & fId & "${DELIMITERS.FIELD}name${DELIMITERS.EQUALS}" & fName & "${DELIMITERS.FIELD}unreadCount${DELIMITERS.EQUALS}" & uCount & "${DELIMITERS.FIELD}messageCount${DELIMITERS.EQUALS}" & mCount & "${DELIMITERS.FIELD}accountId${DELIMITERS.EQUALS}" & accId
         end try

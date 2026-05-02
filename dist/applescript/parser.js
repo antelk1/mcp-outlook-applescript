@@ -143,6 +143,7 @@ export function parseFolders(output) {
         id: parseNumber(r['id']),
         name: parseString(r['name']),
         unreadCount: parseNumber(r['unreadCount']),
+        messageCount: parseNumber(r['messageCount']),
     }));
 }
 /**

@@ -103,7 +103,7 @@ function errorResult(message: string) {
 export function createServer(): McpServer {
     const server = new McpServer({
         name: 'outlook-mcp',
-        version: '1.1.1',
+        version: '1.2.0',
     });
 
     const tokenManager = new ApprovalTokenManager();

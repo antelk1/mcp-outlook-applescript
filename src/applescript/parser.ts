@@ -9,6 +9,7 @@ export interface AppleScriptFolderRow {
     readonly id: number;
     readonly name: string | null;
     readonly unreadCount: number;
+    readonly messageCount: number;
 }
 
 /** Represents an email attachment's metadata from AppleScript. */
@@ -326,6 +327,7 @@ export function parseFolders(output: string): AppleScriptFolderRow[] {
         id: parseNumber(r['id']),
         name: parseString(r['name']),
         unreadCount: parseNumber(r['unreadCount']),
+        messageCount: parseNumber(r['messageCount']),
     }));
 }
 

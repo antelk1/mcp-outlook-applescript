@@ -29,6 +29,48 @@ const FLAG_STATUS_BLOCK = `
         end if
       end try`;
 
+/**
+ * AppleScript block: read sender address + name into `mSender` and `mSenderName`.
+ *
+ * Outlook 16+ does NOT support `address of sender of m` or `name of sender of m`
+ * as direct property paths — those raise "Can't make ... into type specifier".
+ * The sender record must first be assigned to a local variable, then field access
+ * works. The address field's class is «class radd».
+ *
+ * This block is silent on outgoing messages (Sent Items) where sender doesn't
+ * exist — both fields stay empty.
+ */
+const SENDER_BLOCK = `
+        set mSender to ""
+        set mSenderName to ""
+        try
+          set _sndr to sender of m
+          try
+            set mSender to «class radd» of _sndr
+          end try
+          try
+            set mSenderName to name of _sndr
+          end try
+        end try`;
+
+/**
+ * AppleScript block: read send/receive timestamp into `mDate` as ISO 8601.
+ *
+ * Tries `time received` first (incoming messages) then falls back to `time sent`
+ * (Sent Items, Drafts, Outbox — outgoing messages don't have time received).
+ * Stays empty if both are missing.
+ */
+const DATE_BLOCK = `
+        set mDate to ""
+        try
+          set mDate to time received of m as «class isot» as string
+        end try
+        if mDate is "" then
+          try
+            set mDate to time sent of m as «class isot» as string
+          end try
+        end if`;
+
 // =============================================================================
 // Interfaces
 // =============================================================================
@@ -179,7 +221,16 @@ tell application "Microsoft Outlook"
       set fId to id of f
       set fName to name of f
       set uCount to unread count of f
-      set output to output & "{{RECORD}}id{{=}}" & fId & "{{FIELD}}name{{=}}" & fName & "{{FIELD}}unreadCount{{=}}" & uCount
+      -- Per-folder timeout: slow folders (large mailboxes that haven't been
+      -- queried recently) can take 60+ seconds to count. Cap at 3s and fall
+      -- back to 0 so list_folders never hangs the whole call.
+      set mCount to 0
+      try
+        with timeout of 3 seconds
+          set mCount to count of messages of f
+        end timeout
+      end try
+      set output to output & "{{RECORD}}id{{=}}" & fId & "{{FIELD}}name{{=}}" & fName & "{{FIELD}}unreadCount{{=}}" & uCount & "{{FIELD}}messageCount{{=}}" & mCount
     end try
   end repeat
   return output
@@ -232,18 +283,8 @@ ${dateVarBlock}${fetchBlock}
       set m to item i of allMsgs
       set mId to id of m
       set mSubject to subject of m
-      set mSender to ""
-      try
-        set mSender to address of sender of m
-      end try
-      set mSenderName to ""
-      try
-        set mSenderName to name of sender of m
-      end try
-      set mDate to ""
-      try
-        set mDate to time received of m as «class isot» as string
-      end try
+${SENDER_BLOCK}
+${DATE_BLOCK}
       set mRead to is read of m
       set mPriority to "normal"
       try
@@ -266,9 +307,19 @@ end tell
 }
 /**
  * Maximum number of messages to scan for sender-address matches.
- * Kept low so a 45s AppleScript timeout can cover large mailboxes.
+ *
+ * Each scan reads 3 AppleScript properties per message (sender record + radd +
+ * name), each of which is an AppleEvent costing ~50–150ms. At 200 messages
+ * that's 30–60s — too close to the 55s AS-internal timeout, especially after
+ * Phase 1 already burned 20–30s on a cold start.
+ *
+ * 50 messages × ~150ms ≈ 8s for Phase 2, leaving ample headroom for Phase 1.
+ *
+ * Outlook does NOT support `messages whose sender contains "X"` natively
+ * (it raises "can't make X into type email address") so a manual loop is the
+ * only option for sender-only matches.
  */
-const SENDER_SCAN_LIMIT = 200;
+const SENDER_SCAN_LIMIT = 50;
 /**
  * Searches messages by query.
  *
@@ -323,7 +374,7 @@ export function searchMessages(query: string, folderId: number | null, limit: nu
 
     return `
 tell application "Microsoft Outlook"
-  with timeout of 45 seconds
+  with timeout of 55 seconds
   set output to ""
   set resultCount to 0
   set maxResults to ${limit}
@@ -344,18 +395,8 @@ ${dateVarBlock}
         set m to item i of subjectMatches
         set mId to id of m
         set mSubject to subject of m
-        set mSender to ""
-        try
-          set mSender to address of sender of m
-        end try
-        set mSenderName to ""
-        try
-          set mSenderName to name of sender of m
-        end try
-        set mDate to ""
-        try
-          set mDate to time received of m as «class isot» as string
-        end try
+${SENDER_BLOCK}
+${DATE_BLOCK}
         set mRead to is read of m
         set mPreview to ""
 ${FLAG_STATUS_BLOCK}
@@ -391,23 +432,13 @@ ${FLAG_STATUS_BLOCK}
       try
         set m to item i of allMsgs
         set mId to id of m
-        set mSender to ""
-        try
-          set mSender to address of sender of m
-        end try
-        if mSender contains "${escapedQuery}" then${phase2DateCheck}
+${SENDER_BLOCK}
+        if (mSender contains "${escapedQuery}") or (mSenderName contains "${escapedQuery}") then${phase2DateCheck}
           if phase2Skipped < phase2Skip then
             set phase2Skipped to phase2Skipped + 1
           else
             set mSubject to subject of m
-            set mSenderName to ""
-            try
-              set mSenderName to name of sender of m
-            end try
-            set mDate to ""
-            try
-              set mDate to time received of m as «class isot» as string
-            end try
+${DATE_BLOCK}
             set mRead to is read of m
             set mPreview to ""
 ${FLAG_STATUS_BLOCK}
@@ -463,18 +494,8 @@ ${FLAG_STATUS_BLOCK}
             set mContent to content of m
             if mContent contains "${escapedQuery}" then
               set mSubject to subject of m
-              set mSender to ""
-              try
-                set mSender to address of sender of m
-              end try
-              set mSenderName to ""
-              try
-                set mSenderName to name of sender of m
-              end try
-              set mDate to ""
-              try
-                set mDate to time received of m as «class isot» as string
-              end try
+${SENDER_BLOCK}
+${DATE_BLOCK}
               set mRead to is read of m
               set mPreview to ""
 ${FLAG_STATUS_BLOCK}
@@ -502,12 +523,15 @@ tell application "Microsoft Outlook"
   set mId to id of m
   set mSubject to subject of m
   set mSender to ""
-  try
-    set mSender to address of sender of m
-  end try
   set mSenderName to ""
   try
-    set mSenderName to name of sender of m
+    set _sndr to sender of m
+    try
+      set mSender to «class radd» of _sndr
+    end try
+    try
+      set mSenderName to name of _sndr
+    end try
   end try
   set mDateReceived to ""
   try

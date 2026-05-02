@@ -21,7 +21,7 @@ function toFolderRow(asFolder) {
         specialType: 0,
         folderType: 1,
         accountId: 1,
-        messageCount: 0,
+        messageCount: asFolder.messageCount,
         unreadCount: asFolder.unreadCount,
     };
 }
@@ -125,14 +125,23 @@ export function deduplicateEmailRows(rows) {
 }
 /**
  * Calculate timeout for search operations, scaling with offset.
- * Capped at 50s so the server returns before the MCP client's ~60s request
- * timeout fires. AppleScript has its own `with timeout of 45 seconds` inside
- * the search script, so Outlook returns a clean timeout error rather than
- * being SIGKILLed by Node (which corrupts the AppleScript bridge → -609 errors
- * on subsequent calls).
+ *
+ * Layering (outermost to innermost):
+ *   - MCP client (Claude Code): typically 90–120s for tool calls
+ *   - Node side (this function):  65–80s
+ *   - AppleScript inner block:    55s (`with timeout of 55 seconds` in scripts.ts)
+ *
+ * AppleScript's inner timeout MUST fire before Node's, otherwise Node SIGKILLs
+ * osascript mid-Apple-Event and corrupts Outlook's scripting bridge, causing
+ * cascading -609 errors on subsequent calls. The 10s gap between Node (65s)
+ * and AS-internal (55s) is the safety margin.
+ *
+ * Why 55s for AS-internal: Outlook's first heavy AppleScript call after idle
+ * (cold start) takes 30–45s while it pages in the subject index. 55s comfortably
+ * covers this so cold-start searches succeed instead of timing out.
  */
 export function searchTimeoutMs(offset) {
-    return Math.min(50000, 40000 + Math.floor(offset / 25) * 5000);
+    return Math.min(80000, 65000 + Math.floor(offset / 25) * 5000);
 }
 export class AppleScriptRepository {
     folderCache = new Map();
@@ -160,14 +169,13 @@ export class AppleScriptRepository {
     }
     listEmails(folderId, limit, offset, after, before) {
         const script = scripts.listMessages(folderId, limit, offset, false, after, before);
-        // Email listing is slow on large folders — use 45s timeout; date-filtered queries may be slower
-        const timeoutMs = (after != null || before != null) ? 60000 : 45000;
+        const timeoutMs = (after != null || before != null) ? 65000 : 50000;
         const output = executeAppleScriptOrThrow(script, { timeoutMs });
         return parser.parseEmails(output).map(toEmailRow);
     }
     listUnreadEmails(folderId, limit, offset, after, before) {
         const script = scripts.listMessages(folderId, limit, offset, true, after, before);
-        const timeoutMs = (after != null || before != null) ? 60000 : 45000;
+        const timeoutMs = (after != null || before != null) ? 65000 : 50000;
         const output = executeAppleScriptOrThrow(script, { timeoutMs });
         return parser.parseEmails(output).map(toEmailRow);
     }

@@ -140,6 +140,22 @@ No native dependencies. No network calls. No database.
 
 ## Known issues
 
-- **Large mailboxes (50k+ messages) + unscoped search:** Phase 1 of `searchMessages` uses `messages whose subject contains …` with no `folder_id` — Outlook must scan every message. On an 84k-msg Inbox this approaches the 45s AppleScript timeout. Always pass `folder_id` and/or `after`/`before` when possible. `SENDER_SCAN_LIMIT` is capped at 200 for the same reason.
+- **Large mailboxes (50k+ messages) + unscoped search:** Phase 1 of `searchMessages` uses `messages whose subject contains …` with no `folder_id` — Outlook must scan every message. On an 84k-msg Inbox this can take 30–50s on a cold start. Always pass `folder_id` and/or `after`/`before` when possible. `SENDER_SCAN_LIMIT` is 50 (Phase 2) — sender-only matches are limited to the first 50 messages of the folder.
+- **Cold-start latency:** Outlook's first heavy AppleScript query after idle takes 30–45s while it pages in the message subject index. Subsequent calls are 1–4s. The `with timeout of 55 seconds` AS-internal cap absorbs cold starts; Node's 65–80s outer timeout has a 10s safety margin so AS-internal always fires first.
 - **Zombie server processes:** Prior to the 2026-04-24 fix, the server had no `transport.onclose`/`SIGTERM` handlers, so Node processes leaked after every Claude Code session that disconnected. If you see many instances in `pgrep -af mcp-outlook-applescript`, they are from old versions — rebuild and restart. Current code exits cleanly on transport close or signal.
-- **`osascript ETIMEDOUT` followed by `-609`:** If Node's sync `execFileSync` kills osascript mid-Apple-Event, Outlook's scripting bridge breaks briefly. Fix is the AppleScript-internal `with timeout` (above) which returns a clean error before Node's kill-timer fires. If you still see −609, wait 10–30s for Outlook to self-heal, then retry.
+- **`osascript ETIMEDOUT` followed by `-609`:** If Node's sync `execFileSync` kills osascript mid-Apple-Event, Outlook's scripting bridge breaks briefly. The fix is the AppleScript-internal `with timeout of 55 seconds` (set inside `searchMessages`), which returns a clean -1712 error before Node's 65–80s kill-timer fires. If you still see −609, wait 10–30s for Outlook to self-heal, then retry.
+
+## Outlook 16+ AppleScript gotchas (1.2.0)
+
+The following AppleScript patterns DO NOT work in Outlook for Mac 16+ and must be replaced with two-step variants. See `SENDER_BLOCK` and `DATE_BLOCK` helpers in `scripts.ts`:
+
+- **`address of sender of m`** — fails with "Can't make ... into type specifier". The sender record has class `«class radd»` for the email address, but property paths through `sender of m` don't resolve. **Fix:** assign sender to a local variable first, then access fields:
+  ```applescript
+  set _s to sender of m
+  set mSender to «class radd» of _s   -- email address
+  set mSenderName to name of _s       -- friendly name
+  ```
+  This bug silently produced empty `senderEmail`/`senderName` in all search and list results before 1.2.0, and broke Phase 2 sender-search entirely (the `if mSender contains query` check always failed because `mSender` was always "").
+- **`time received` of a sent item** is `missing value`. Sent Items have `time sent` instead. `DATE_BLOCK` tries `time received` first, then falls back to `time sent`.
+- **`messages whose sender contains "X"`** raises "Can't make X into type email address". `whose` cannot index into the sender record, so Phase 2 (sender-only matches) must use a manual loop with `SENDER_SCAN_LIMIT` cap.
+- **`address of r` for recipients** has the same bug pattern as sender. Recipients in `get_email` may need a similar two-step fix in a future change (current code silently returns empty recipient lists in some cases).
