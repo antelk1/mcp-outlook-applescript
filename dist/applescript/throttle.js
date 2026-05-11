@@ -21,12 +21,13 @@
  *    Pacing is adaptive: tightens when the bridge is fast, widens when it's
  *    slow. On a healthy bridge it's almost imperceptible (100ms).
  *
- * 2. **Adaptive backoff** — record per-call latency in a rolling window,
- *    classify bridge health (healthy/normal/stressed/degraded), and at the
- *    degraded tier refuse expensive operations entirely. This is the safety
- *    brake: it surfaces a clear `OUTLOOK_BRIDGE_STRESSED` error to callers
- *    BEFORE the bridge dies completely, while a graceful restart is still
- *    possible.
+ * 2. **Adaptive backoff** — record per-call latency in a rolling window with
+ *    time-decay (samples older than 5 minutes are excluded from classification
+ *    so a single old slow call doesn't dominate p95 forever), classify bridge
+ *    health (healthy/normal/stressed/degraded), and at the degraded tier
+ *    refuse expensive operations entirely. This is the safety brake: it
+ *    surfaces a clear `OUTLOOK_BRIDGE_STRESSED` error to callers BEFORE the
+ *    bridge dies completely, while a graceful restart is still possible.
  *
  * ## State machine
  *
@@ -48,6 +49,14 @@
  * subprocess. Node 16+.
  */
 const WINDOW_CAPACITY = 10;
+/**
+ * Samples older than this are excluded from bridge-state classification.
+ * Without time-decay, a single slow call (e.g. a 13s cold-start search) would
+ * dominate p95 for as long as it stayed in the rolling window — even if every
+ * subsequent call was fast. The state should reflect *recent* evidence, not
+ * cumulative history.
+ */
+const SAMPLE_DECAY_MS = 5 * 60 * 1000;
 const latencyWindow = [];
 let lastCallTime = 0;
 const sleepBuffer = new Int32Array(new SharedArrayBuffer(4));
@@ -64,9 +73,14 @@ function p95(samples) {
     const idx = Math.floor(sorted.length * 0.95);
     return sorted[Math.min(idx, sorted.length - 1)] ?? 0;
 }
+function recentLatencies() {
+    const cutoff = Date.now() - SAMPLE_DECAY_MS;
+    return latencyWindow.filter(s => s.timestamp >= cutoff).map(s => s.ms);
+}
 function classifyBridgeState(p95Latency, sampleCount) {
-    // With fewer than 3 samples we can't classify reliably — default to normal.
-    // This means the first few calls of a session don't get unnecessary throttle.
+    // With fewer than 3 *recent* samples we can't classify reliably — default
+    // to normal. This means a fresh session doesn't get unnecessary throttle,
+    // and stale samples don't cause persistent false-positive degradation.
     if (sampleCount < 3)
         return 'normal';
     if (p95Latency < 500)
@@ -78,10 +92,11 @@ function classifyBridgeState(p95Latency, sampleCount) {
     return 'degraded';
 }
 export function currentBridgeState() {
-    return classifyBridgeState(p95(latencyWindow), latencyWindow.length);
+    const recent = recentLatencies();
+    return classifyBridgeState(p95(recent), recent.length);
 }
 export function currentP95() {
-    return p95(latencyWindow);
+    return p95(recentLatencies());
 }
 export function currentThrottleMs() {
     return STATE_CONFIG[currentBridgeState()].throttleMs;
@@ -106,18 +121,21 @@ export function waitForSlot() {
     lastCallTime = Date.now();
 }
 export function recordLatency(ms) {
-    latencyWindow.push(ms);
+    latencyWindow.push({ ms, timestamp: Date.now() });
     if (latencyWindow.length > WINDOW_CAPACITY) {
         latencyWindow.shift();
     }
 }
 export function bridgeStateSnapshot() {
     const state = currentBridgeState();
+    const recent = recentLatencies();
     return {
         state,
-        p95LatencyMs: p95(latencyWindow),
-        sampleCount: latencyWindow.length,
+        p95LatencyMs: p95(recent),
+        recentSampleCount: recent.length,
+        totalSampleCount: latencyWindow.length,
         windowCapacity: WINDOW_CAPACITY,
+        sampleDecayMs: SAMPLE_DECAY_MS,
         throttleMs: STATE_CONFIG[state].throttleMs,
         refusingExpensiveOps: STATE_CONFIG[state].refuseExpensive,
     };
