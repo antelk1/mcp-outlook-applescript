@@ -13,6 +13,7 @@ export const ErrorCode = {
     APPLESCRIPT_PERMISSION_DENIED: 'APPLESCRIPT_PERMISSION_DENIED',
     APPLESCRIPT_TIMEOUT: 'APPLESCRIPT_TIMEOUT',
     APPLESCRIPT_ERROR: 'APPLESCRIPT_ERROR',
+    OUTLOOK_BRIDGE_STRESSED: 'OUTLOOK_BRIDGE_STRESSED',
     ATTACHMENT_NOT_FOUND: 'ATTACHMENT_NOT_FOUND',
     ATTACHMENT_TOO_LARGE: 'ATTACHMENT_TOO_LARGE',
     ATTACHMENT_SAVE_ERROR: 'ATTACHMENT_SAVE_ERROR',
@@ -129,6 +130,27 @@ export class AppleScriptError extends OutlookMcpError {
     readonly code = ErrorCode.APPLESCRIPT_ERROR;
     constructor(message: string, readonly cause?: Error | undefined) {
         super(message);
+    }
+}
+
+/**
+ * Thrown when adaptive backoff classifies the Outlook AppleScript bridge as
+ * degraded and refuses to issue further expensive operations. This is a
+ * structurally different signal from APPLESCRIPT_TIMEOUT: the timeout means
+ * "this specific call took too long"; BRIDGE_STRESSED means "the bridge
+ * itself is stuck and the safety brake has engaged before we make it worse."
+ *
+ * Callers (notably the LLM-driven assistant) should treat this as actionable:
+ * the user should run `~/.local/bin/outlook-safe-restart.sh` rather than retry.
+ */
+export class OutlookBridgeStressedError extends OutlookMcpError {
+    readonly code = ErrorCode.OUTLOOK_BRIDGE_STRESSED;
+    constructor(p95Ms: number, operation: string) {
+        super(`Outlook AppleScript bridge is degraded ` +
+            `(rolling p95 latency ${p95Ms}ms). Refused: ${operation}. ` +
+            `Run \`~/.local/bin/outlook-safe-restart.sh\` to recover, ` +
+            `then retry. The script's safety guards will refuse if a draft ` +
+            `is open.`);
     }
 }
 

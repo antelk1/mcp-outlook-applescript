@@ -3,6 +3,24 @@ import * as scripts from './scripts.js';
 import * as parser from './parser.js';
 import { appleTimestampToIso, isoToAppleTimestamp } from '../utils/dates.js';
 import { createEmailPath, createEventPath, createContactPath, createTaskPath, createNotePath, } from './content-readers.js';
+import { TtlCache } from './cache.js';
+import { isExpensiveOperationAllowed, currentP95 } from './throttle.js';
+import { OutlookBridgeStressedError } from '../utils/errors.js';
+/**
+ * Refuse expensive operations when the bridge is degraded (rolling p95 latency
+ * ≥ 2000ms). This is the safety brake: instead of letting another heavy call
+ * push Outlook over the edge into -1712 territory, we surface a structured
+ * error that tells the caller to run the recovery script.
+ */
+function gateExpensive(operation) {
+    if (!isExpensiveOperationAllowed()) {
+        throw new OutlookBridgeStressedError(currentP95(), operation);
+    }
+}
+// Folder list cache (5 min TTL). Folders rarely change — extending from the
+// previous 30s removes hundreds of redundant AppleEvents per typical session.
+const FOLDER_LIST_TTL_MS = 5 * 60 * 1000;
+const FOLDER_LIST_CACHE_KEY = 'all';
 function priorityToNumber(priority) {
     switch (priority.toLowerCase()) {
         case 'high':
@@ -144,47 +162,41 @@ export function searchTimeoutMs(offset) {
     return Math.min(80000, 65000 + Math.floor(offset / 25) * 5000);
 }
 export class AppleScriptRepository {
-    folderCache = new Map();
-    folderCacheExpiry = 0;
-    CACHE_TTL_MS = 30000;
+    folderListCache = new TtlCache(FOLDER_LIST_TTL_MS);
     listFolders() {
+        const cached = this.folderListCache.get(FOLDER_LIST_CACHE_KEY);
+        if (cached != null)
+            return cached;
         const output = executeAppleScriptOrThrow(scripts.LIST_MAIL_FOLDERS);
         const folders = parser.parseFolders(output).map(toFolderRow);
-        this.folderCache.clear();
-        for (const folder of folders) {
-            this.folderCache.set(folder.id, folder);
-        }
-        this.folderCacheExpiry = Date.now() + this.CACHE_TTL_MS;
+        this.folderListCache.set(FOLDER_LIST_CACHE_KEY, folders);
         return folders;
     }
     getFolder(id) {
-        if (Date.now() < this.folderCacheExpiry) {
-            const cached = this.folderCache.get(id);
-            if (cached != null) {
-                return cached;
-            }
-        }
-        const folders = this.listFolders();
-        return folders.find((f) => f.id === id);
+        return this.listFolders().find((f) => f.id === id);
     }
     listEmails(folderId, limit, offset, after, before) {
+        gateExpensive(`listEmails(folder=${folderId}, limit=${limit})`);
         const script = scripts.listMessages(folderId, limit, offset, false, after, before);
         const timeoutMs = (after != null || before != null) ? 65000 : 50000;
         const output = executeAppleScriptOrThrow(script, { timeoutMs });
         return parser.parseEmails(output).map(toEmailRow);
     }
     listUnreadEmails(folderId, limit, offset, after, before) {
+        gateExpensive(`listUnreadEmails(folder=${folderId}, limit=${limit})`);
         const script = scripts.listMessages(folderId, limit, offset, true, after, before);
         const timeoutMs = (after != null || before != null) ? 65000 : 50000;
         const output = executeAppleScriptOrThrow(script, { timeoutMs });
         return parser.parseEmails(output).map(toEmailRow);
     }
     searchEmails(query, limit, offset, after, before, includeBodySearch) {
+        gateExpensive(`searchEmails(query="${query}", limit=${limit})`);
         const script = scripts.searchMessages(query, null, limit, offset, after, before, includeBodySearch);
         const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
         return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
     }
     searchEmailsInFolder(folderId, query, limit, offset, after, before, includeBodySearch) {
+        gateExpensive(`searchEmailsInFolder(folder=${folderId}, query="${query}", limit=${limit})`);
         const script = scripts.searchMessages(query, folderId, limit, offset, after, before, includeBodySearch);
         const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
         return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
@@ -355,6 +367,7 @@ export class AppleScriptRepository {
         const script = scripts.createMailFolder(name, parentFolderId);
         const output = executeAppleScriptOrThrow(script);
         const newFolderId = parseInt(output.trim(), 10);
+        this.folderListCache.invalidateAll();
         return {
             id: newFolderId,
             name,
@@ -369,14 +382,17 @@ export class AppleScriptRepository {
     deleteFolder(folderId) {
         const script = scripts.deleteMailFolder(folderId);
         executeAppleScriptOrThrow(script);
+        this.folderListCache.invalidateAll();
     }
     renameFolder(folderId, newName) {
         const script = scripts.renameMailFolder(folderId, newName);
         executeAppleScriptOrThrow(script);
+        this.folderListCache.invalidateAll();
     }
     moveFolder(folderId, destinationParentId) {
         const script = scripts.moveMailFolder(folderId, destinationParentId);
         executeAppleScriptOrThrow(script);
+        this.folderListCache.invalidateAll();
     }
     emptyFolder(folderId) {
         const script = scripts.emptyMailFolder(folderId);

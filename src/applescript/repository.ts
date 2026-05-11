@@ -5,6 +5,26 @@ import { appleTimestampToIso, isoToAppleTimestamp } from '../utils/dates.js';
 import { createEmailPath, createEventPath, createContactPath, createTaskPath, createNotePath, } from './content-readers.js';
 import type { IWriteableRepository, FolderRow, EmailRow, EventRow, ContactRow, TaskRow, NoteRow } from '../database/repository.js';
 import type { AppleScriptFolderRow, AppleScriptCalendarRow, AppleScriptEmailRow, AppleScriptEventRow, AppleScriptContactRow, AppleScriptTaskRow, AppleScriptNoteRow } from './parser.js';
+import { TtlCache } from './cache.js';
+import { isExpensiveOperationAllowed, currentP95 } from './throttle.js';
+import { OutlookBridgeStressedError } from '../utils/errors.js';
+
+/**
+ * Refuse expensive operations when the bridge is degraded (rolling p95 latency
+ * ≥ 2000ms). This is the safety brake: instead of letting another heavy call
+ * push Outlook over the edge into -1712 territory, we surface a structured
+ * error that tells the caller to run the recovery script.
+ */
+function gateExpensive(operation: string): void {
+    if (!isExpensiveOperationAllowed()) {
+        throw new OutlookBridgeStressedError(currentP95(), operation);
+    }
+}
+
+// Folder list cache (5 min TTL). Folders rarely change — extending from the
+// previous 30s removes hundreds of redundant AppleEvents per typical session.
+const FOLDER_LIST_TTL_MS = 5 * 60 * 1000;
+const FOLDER_LIST_CACHE_KEY = 'all';
 
 function priorityToNumber(priority: string): number {
     switch (priority.toLowerCase()) {
@@ -156,33 +176,23 @@ export function searchTimeoutMs(offset: number): number {
 }
 
 export class AppleScriptRepository implements IWriteableRepository {
-    private readonly folderCache = new Map<number, FolderRow>();
-    private folderCacheExpiry = 0;
-    private readonly CACHE_TTL_MS = 30000;
+    private readonly folderListCache = new TtlCache<FolderRow[]>(FOLDER_LIST_TTL_MS);
 
     listFolders(): FolderRow[] {
+        const cached = this.folderListCache.get(FOLDER_LIST_CACHE_KEY);
+        if (cached != null) return cached;
         const output = executeAppleScriptOrThrow(scripts.LIST_MAIL_FOLDERS);
         const folders = parser.parseFolders(output).map(toFolderRow);
-        this.folderCache.clear();
-        for (const folder of folders) {
-            this.folderCache.set(folder.id, folder);
-        }
-        this.folderCacheExpiry = Date.now() + this.CACHE_TTL_MS;
+        this.folderListCache.set(FOLDER_LIST_CACHE_KEY, folders);
         return folders;
     }
 
     getFolder(id: number): FolderRow | undefined {
-        if (Date.now() < this.folderCacheExpiry) {
-            const cached = this.folderCache.get(id);
-            if (cached != null) {
-                return cached;
-            }
-        }
-        const folders = this.listFolders();
-        return folders.find((f) => f.id === id);
+        return this.listFolders().find((f) => f.id === id);
     }
 
     listEmails(folderId: number, limit: number, offset: number, after?: string, before?: string): EmailRow[] {
+        gateExpensive(`listEmails(folder=${folderId}, limit=${limit})`);
         const script = scripts.listMessages(folderId, limit, offset, false, after, before);
         const timeoutMs = (after != null || before != null) ? 65000 : 50000;
         const output = executeAppleScriptOrThrow(script, { timeoutMs });
@@ -190,6 +200,7 @@ export class AppleScriptRepository implements IWriteableRepository {
     }
 
     listUnreadEmails(folderId: number, limit: number, offset: number, after?: string, before?: string): EmailRow[] {
+        gateExpensive(`listUnreadEmails(folder=${folderId}, limit=${limit})`);
         const script = scripts.listMessages(folderId, limit, offset, true, after, before);
         const timeoutMs = (after != null || before != null) ? 65000 : 50000;
         const output = executeAppleScriptOrThrow(script, { timeoutMs });
@@ -197,12 +208,14 @@ export class AppleScriptRepository implements IWriteableRepository {
     }
 
     searchEmails(query: string, limit: number, offset: number, after?: string, before?: string, includeBodySearch?: boolean): EmailRow[] {
+        gateExpensive(`searchEmails(query="${query}", limit=${limit})`);
         const script = scripts.searchMessages(query, null, limit, offset, after, before, includeBodySearch);
         const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
         return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
     }
 
     searchEmailsInFolder(folderId: number, query: string, limit: number, offset: number, after?: string, before?: string, includeBodySearch?: boolean): EmailRow[] {
+        gateExpensive(`searchEmailsInFolder(folder=${folderId}, query="${query}", limit=${limit})`);
         const script = scripts.searchMessages(query, folderId, limit, offset, after, before, includeBodySearch);
         const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
         return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
@@ -400,6 +413,7 @@ export class AppleScriptRepository implements IWriteableRepository {
         const script = scripts.createMailFolder(name, parentFolderId);
         const output = executeAppleScriptOrThrow(script);
         const newFolderId = parseInt(output.trim(), 10);
+        this.folderListCache.invalidateAll();
         return {
             id: newFolderId,
             name,
@@ -415,16 +429,19 @@ export class AppleScriptRepository implements IWriteableRepository {
     deleteFolder(folderId: number): void {
         const script = scripts.deleteMailFolder(folderId);
         executeAppleScriptOrThrow(script);
+        this.folderListCache.invalidateAll();
     }
 
     renameFolder(folderId: number, newName: string): void {
         const script = scripts.renameMailFolder(folderId, newName);
         executeAppleScriptOrThrow(script);
+        this.folderListCache.invalidateAll();
     }
 
     moveFolder(folderId: number, destinationParentId: number): void {
         const script = scripts.moveMailFolder(folderId, destinationParentId);
         executeAppleScriptOrThrow(script);
+        this.folderListCache.invalidateAll();
     }
 
     emptyFolder(folderId: number): void {

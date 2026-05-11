@@ -3,6 +3,7 @@ import {
     OutlookMcpError,
     ErrorCode,
 } from '../utils/errors.js';
+import { recordLatency, waitForSlot } from './throttle.js';
 
 export interface AppleScriptResult {
     readonly success: boolean;
@@ -12,6 +13,12 @@ export interface AppleScriptResult {
 
 export interface ExecuteOptions {
     readonly timeoutMs?: number;
+    /**
+     * When true, skip the adaptive inter-call throttle. Use only for the
+     * throttle's own probe path or for synchronous health checks that must
+     * not contribute to bridge stress measurements (e.g. isOutlookRunning).
+     */
+    readonly skipThrottle?: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -53,15 +60,32 @@ export function executeAppleScript(script: string, options: ExecuteOptions = {})
         maxBuffer: 50 * 1024 * 1024, // 50MB for large results
         input: script,
     };
+
+    // Throttle: pace AppleScript calls to give Outlook's bridge breathing room.
+    // Default 100–1000ms gap (adaptive per bridge state). Skipped for the
+    // throttle's own internal probes to avoid feedback loops.
+    if (!options.skipThrottle) {
+        waitForSlot();
+    }
+
+    const startNs = process.hrtime.bigint();
     try {
         // Execute via osascript with script passed on stdin (no shell interpretation)
         const output = execFileSync('osascript', [], execOptions);
+        const elapsedMs = Number((process.hrtime.bigint() - startNs) / 1_000_000n);
+        if (!options.skipThrottle) {
+            recordLatency(elapsedMs);
+        }
         return {
             success: true,
             output: (output as string).trim(),
         };
     }
     catch (error: unknown) {
+        const elapsedMs = Number((process.hrtime.bigint() - startNs) / 1_000_000n);
+        if (!options.skipThrottle) {
+            recordLatency(elapsedMs);
+        }
         const errorMessage = error instanceof Error ? error.message : String(error);
         const stderr = (error as { stderr?: Buffer | string | undefined })?.stderr;
         let stderrText = '';
@@ -95,8 +119,15 @@ export function executeAppleScriptOrThrow(script: string, options: ExecuteOption
  *
  * Outlook's first heavy AppleScript call after idle takes 30–45s while it pages
  * in indexes; subsequent calls are 1–4s. This retry handles the cold start by
- * issuing a cheap warm-up call (`tell app "Microsoft Outlook" to return name`)
- * to ensure the bridge is responsive, then retrying the original script.
+ * issuing a warm-up call (`count of messages of outbox`) to ensure the bridge
+ * is responsive, then retrying the original script.
+ *
+ * The warm-up query was chosen specifically because it's the same one the
+ * watchdog (`outlook-safe-restart.sh`) uses to detect bridge degradation: it
+ * touches the message store, not just app metadata. The earlier `return name`
+ * was a metadata-only call and could falsely pass while real queries still
+ * hung (verified 2026-05-12 — window enumeration worked while `count of
+ * messages of outbox` returned -1712).
  *
  * Use only for read-only operations — never for mutations, where retry-after-
  * timeout could double-apply.
@@ -112,7 +143,8 @@ export function executeAppleScriptWithRetry(script: string, options: ExecuteOpti
         throw new AppleScriptExecutionError(result.error ?? 'Unknown error', errorType);
     }
     // Cold-start fallback: warm up the bridge, then retry once with the same timeout.
-    executeAppleScript(WARMUP_SCRIPT, { timeoutMs: 5000 });
+    // The warmup itself skips the throttle so we don't double-count its latency.
+    executeAppleScript(WARMUP_SCRIPT, { timeoutMs: 5000, skipThrottle: true });
     const retry = executeAppleScript(script, options);
     if (!retry.success) {
         const retryType = categorizeError(retry.error ?? '');
@@ -121,7 +153,7 @@ export function executeAppleScriptWithRetry(script: string, options: ExecuteOpti
     return retry.output;
 }
 
-const WARMUP_SCRIPT = `tell application "Microsoft Outlook" to return name`;
+const WARMUP_SCRIPT = `tell application "Microsoft Outlook" to count of messages of outbox`;
 
 export function isOutlookRunning(): boolean {
     const script = `
@@ -130,7 +162,9 @@ tell application "System Events"
   return isRunning
 end tell
 `;
-    const result = executeAppleScript(script);
+    // This probe targets System Events, not Outlook itself — don't let its
+    // timing pollute the bridge-stress window or take a throttle slot.
+    const result = executeAppleScript(script, { skipThrottle: true });
     return result.success && result.output.toLowerCase() === 'true';
 }
 
