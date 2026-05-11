@@ -158,6 +158,32 @@ tell application "Microsoft Outlook"
 end tell
 `;
 /**
+ * Returns the folder IDs of the user's primary inbox AND sent items folders
+ * (`inbox of default account` and `folder "Sent Items" of default account`).
+ * Used by searchEmails to auto-scope unscoped searches to these two folders
+ * rather than scanning every folder in every account.
+ *
+ * Archive is deliberately excluded from the default — searches there must be
+ * explicit (user instruction 2026-05-12: "exclude archive folder from any
+ * searches unless I explicitly ask").
+ *
+ * Output: "inbox=<id>|sentItems=<id>" — single line, simple to parse.
+ * If sent items can't be resolved, returns "inbox=<id>|sentItems=" (empty).
+ */
+export const GET_DEFAULT_SEARCH_FOLDER_IDS = `
+tell application "Microsoft Outlook"
+  with timeout of 5 seconds
+    set da to default account
+    set inboxId to id of inbox of da
+    set sentId to ""
+    try
+      set sentId to (id of folder "Sent Items" of da) as text
+    end try
+    return "inbox=" & inboxId & "|sentItems=" & sentId
+  end timeout
+end tell
+`;
+/**
  * Gets messages from a specific folder.
  * When after/before are provided, uses a `whose` clause with date comparison.
  */

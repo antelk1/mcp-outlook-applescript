@@ -6,15 +6,20 @@ import { createEmailPath, createEventPath, createContactPath, createTaskPath, cr
 import { TtlCache } from './cache.js';
 import { isExpensiveOperationAllowed, currentP95 } from './throttle.js';
 import { OutlookBridgeStressedError, OutlookQueryRefusedError } from '../utils/errors.js';
+// Default search folders cache (60 min TTL). The user's primary inbox and
+// sent-items folder IDs are effectively static within a session; resolving
+// them once via AppleScript and reusing avoids a per-call lookup.
+const DEFAULT_SEARCH_FOLDERS_TTL_MS = 60 * 60 * 1000;
+const DEFAULT_SEARCH_FOLDERS_CACHE_KEY = 'ids';
 /**
- * Threshold above which we refuse unscoped `searchEmails` calls (no folder_id).
- * Below this, an unscoped search will be slow but unlikely to break the bridge;
- * above it, Outlook's per-message `whose subject contains` scan is empirically
- * dangerous enough to time out at -1712 and leave the bridge degraded.
- *
- * The 50k figure matches the MCP author's existing "Known issues" guidance.
+ * Per-folder message-count safeguard. A `searchEmails`/`searchEmailsInFolder`
+ * call against a folder larger than this is empirically dangerous: Outlook's
+ * per-message `whose subject contains` scan can time out at -1712 and leave
+ * the bridge degraded (verified 2026-05-12). Date filters bound the scan
+ * enough to be safe, so we allow >50k searches when `after` or `before` is
+ * provided.
  */
-const UNSCOPED_SEARCH_MAX_MESSAGES = 50_000;
+const LARGE_FOLDER_THRESHOLD = 50_000;
 /**
  * Refuse expensive operations when the bridge is degraded (rolling p95 latency
  * ≥ 2000ms). This is the safety brake: instead of letting another heavy call
@@ -172,6 +177,46 @@ export function searchTimeoutMs(offset) {
 }
 export class AppleScriptRepository {
     folderListCache = new TtlCache(FOLDER_LIST_TTL_MS);
+    defaultSearchFoldersCache = new TtlCache(DEFAULT_SEARCH_FOLDERS_TTL_MS);
+    /**
+     * Resolves and caches the IDs of the user's primary INBOX and Sent Items
+     * folders via `inbox of default account` / `folder "Sent Items" of default
+     * account`. These are the folders that an unscoped `searchEmails` call
+     * defaults to — Archive is deliberately excluded per user policy.
+     */
+    getDefaultSearchFolders() {
+        const cached = this.defaultSearchFoldersCache.get(DEFAULT_SEARCH_FOLDERS_CACHE_KEY);
+        if (cached != null)
+            return cached;
+        const output = executeAppleScriptOrThrow(scripts.GET_DEFAULT_SEARCH_FOLDER_IDS, { timeoutMs: 8000 });
+        const inboxMatch = output.match(/inbox=(\d+)/);
+        const sentMatch = output.match(/sentItems=(\d+)?/);
+        if (inboxMatch == null) {
+            throw new Error(`Failed to resolve default inbox from AppleScript: ${output}`);
+        }
+        const resolved = {
+            inboxId: parseInt(inboxMatch[1], 10),
+            sentItemsId: sentMatch && sentMatch[1] ? parseInt(sentMatch[1], 10) : null,
+        };
+        this.defaultSearchFoldersCache.set(DEFAULT_SEARCH_FOLDERS_CACHE_KEY, resolved);
+        return resolved;
+    }
+    /**
+     * Refuses a search against a folder larger than LARGE_FOLDER_THRESHOLD
+     * UNLESS a date filter is provided (which bounds the scan enough to be
+     * safe). Surfaces a structured OUTLOOK_QUERY_REFUSED with a concrete
+     * remedy — pass `after` and/or `before`.
+     */
+    gateLargeFolderSearch(folderId, after, before, operation) {
+        const hasDateFilter = after != null || before != null;
+        if (hasDateFilter)
+            return;
+        const folder = this.listFolders().find(f => f.id === folderId);
+        const count = folder?.messageCount ?? 0;
+        if (count > LARGE_FOLDER_THRESHOLD) {
+            throw new OutlookQueryRefusedError(operation, `folder "${folder?.name ?? folderId}" contains ${count.toLocaleString()} messages (>${LARGE_FOLDER_THRESHOLD.toLocaleString()} threshold) and unbounded search would risk destabilizing the Outlook AppleScript bridge`, `Pass \`after\` and/or \`before\` (ISO 8601) to bound the search by date — e.g., \`after: "2025-01-01T00:00:00Z"\` to search the last year. Date-bounded searches at this size are safe.`);
+        }
+    }
     listFolders() {
         const cached = this.folderListCache.get(FOLDER_LIST_CACHE_KEY);
         if (cached != null)
@@ -199,28 +244,34 @@ export class AppleScriptRepository {
         return parser.parseEmails(output).map(toEmailRow);
     }
     /**
-     * Total message count across all mail folders, used by the unscoped-search
-     * predictive guard. Reads from the folder list cache when warm; otherwise
-     * triggers a single `listFolders()` call (one AppleScript invocation —
-     * cheap relative to the search it might prevent).
+     * Unscoped `searchEmails` auto-scopes to the user's primary INBOX AND
+     * Sent Items folders. Archive is deliberately excluded — the user must
+     * pass `folder_id` explicitly to search Archive (user policy 2026-05-12).
+     *
+     * Each folder is searched in a separate AppleScript call (so the throttle
+     * paces them naturally); results are merged, dedup'd by id, and sorted
+     * by `dateReceived` descending before truncating to `limit`.
+     *
+     * The 50k safeguard applies to each folder individually — if either is
+     * >50k AND no date filter is provided, OUTLOOK_QUERY_REFUSED is thrown.
      */
-    totalMessageCount() {
-        return this.listFolders().reduce((sum, f) => sum + (f.messageCount ?? 0), 0);
-    }
     searchEmails(query, limit, offset, after, before, includeBodySearch) {
-        // Predictive guard: an unscoped search across a large mailbox is the
-        // single most reliable way to break the AppleScript bridge in one call.
-        // Refuse before issuing the AppleEvent rather than after Outlook chokes.
-        const total = this.totalMessageCount();
-        if (total > UNSCOPED_SEARCH_MAX_MESSAGES) {
-            throw new OutlookQueryRefusedError(`searchEmails(query="${query}")`, `unscoped search across ${total.toLocaleString()} messages would scan every folder in every account and is empirically known to destabilize the Outlook AppleScript bridge`, `Pass \`folder_id\` to scope (use \`list_folders\` to find the right one — try the INBOX, Archive, or Sent Items first). If you need to search multiple folders, call \`searchEmailsInFolder\` once per folder. Threshold: ${UNSCOPED_SEARCH_MAX_MESSAGES.toLocaleString()}.`);
+        const { inboxId, sentItemsId } = this.getDefaultSearchFolders();
+        const folders = sentItemsId != null ? [inboxId, sentItemsId] : [inboxId];
+        const merged = [];
+        for (const folderId of folders) {
+            this.gateLargeFolderSearch(folderId, after, before, `searchEmails(query="${query}") on default folder ${folderId}`);
+            gateExpensive(`searchEmails(query="${query}", folder=${folderId}, limit=${limit})`);
+            const script = scripts.searchMessages(query, folderId, limit, offset, after, before, includeBodySearch);
+            const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
+            merged.push(...parser.parseEmails(output).map(toEmailRow));
         }
-        gateExpensive(`searchEmails(query="${query}", limit=${limit})`);
-        const script = scripts.searchMessages(query, null, limit, offset, after, before, includeBodySearch);
-        const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
-        return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
+        const deduped = deduplicateEmailRows(merged);
+        deduped.sort((a, b) => (Number(b.timeReceived) || 0) - (Number(a.timeReceived) || 0));
+        return deduped.slice(0, limit);
     }
     searchEmailsInFolder(folderId, query, limit, offset, after, before, includeBodySearch) {
+        this.gateLargeFolderSearch(folderId, after, before, `searchEmailsInFolder(folder=${folderId}, query="${query}")`);
         gateExpensive(`searchEmailsInFolder(folder=${folderId}, query="${query}", limit=${limit})`);
         const script = scripts.searchMessages(query, folderId, limit, offset, after, before, includeBodySearch);
         const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
