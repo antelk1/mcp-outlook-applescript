@@ -7,7 +7,17 @@ import type { IWriteableRepository, FolderRow, EmailRow, EventRow, ContactRow, T
 import type { AppleScriptFolderRow, AppleScriptCalendarRow, AppleScriptEmailRow, AppleScriptEventRow, AppleScriptContactRow, AppleScriptTaskRow, AppleScriptNoteRow } from './parser.js';
 import { TtlCache } from './cache.js';
 import { isExpensiveOperationAllowed, currentP95 } from './throttle.js';
-import { OutlookBridgeStressedError } from '../utils/errors.js';
+import { OutlookBridgeStressedError, OutlookQueryRefusedError } from '../utils/errors.js';
+
+/**
+ * Threshold above which we refuse unscoped `searchEmails` calls (no folder_id).
+ * Below this, an unscoped search will be slow but unlikely to break the bridge;
+ * above it, Outlook's per-message `whose subject contains` scan is empirically
+ * dangerous enough to time out at -1712 and leave the bridge degraded.
+ *
+ * The 50k figure matches the MCP author's existing "Known issues" guidance.
+ */
+const UNSCOPED_SEARCH_MAX_MESSAGES = 50_000;
 
 /**
  * Refuse expensive operations when the bridge is degraded (rolling p95 latency
@@ -207,7 +217,28 @@ export class AppleScriptRepository implements IWriteableRepository {
         return parser.parseEmails(output).map(toEmailRow);
     }
 
+    /**
+     * Total message count across all mail folders, used by the unscoped-search
+     * predictive guard. Reads from the folder list cache when warm; otherwise
+     * triggers a single `listFolders()` call (one AppleScript invocation —
+     * cheap relative to the search it might prevent).
+     */
+    private totalMessageCount(): number {
+        return this.listFolders().reduce((sum, f) => sum + (f.messageCount ?? 0), 0);
+    }
+
     searchEmails(query: string, limit: number, offset: number, after?: string, before?: string, includeBodySearch?: boolean): EmailRow[] {
+        // Predictive guard: an unscoped search across a large mailbox is the
+        // single most reliable way to break the AppleScript bridge in one call.
+        // Refuse before issuing the AppleEvent rather than after Outlook chokes.
+        const total = this.totalMessageCount();
+        if (total > UNSCOPED_SEARCH_MAX_MESSAGES) {
+            throw new OutlookQueryRefusedError(
+                `searchEmails(query="${query}")`,
+                `unscoped search across ${total.toLocaleString()} messages would scan every folder in every account and is empirically known to destabilize the Outlook AppleScript bridge`,
+                `Pass \`folder_id\` to scope (use \`list_folders\` to find the right one — try the INBOX, Archive, or Sent Items first). If you need to search multiple folders, call \`searchEmailsInFolder\` once per folder. Threshold: ${UNSCOPED_SEARCH_MAX_MESSAGES.toLocaleString()}.`,
+            );
+        }
         gateExpensive(`searchEmails(query="${query}", limit=${limit})`);
         const script = scripts.searchMessages(query, null, limit, offset, after, before, includeBodySearch);
         const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });

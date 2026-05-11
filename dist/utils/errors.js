@@ -13,6 +13,7 @@ export const ErrorCode = {
     APPLESCRIPT_TIMEOUT: 'APPLESCRIPT_TIMEOUT',
     APPLESCRIPT_ERROR: 'APPLESCRIPT_ERROR',
     OUTLOOK_BRIDGE_STRESSED: 'OUTLOOK_BRIDGE_STRESSED',
+    OUTLOOK_QUERY_REFUSED: 'OUTLOOK_QUERY_REFUSED',
     ATTACHMENT_NOT_FOUND: 'ATTACHMENT_NOT_FOUND',
     ATTACHMENT_TOO_LARGE: 'ATTACHMENT_TOO_LARGE',
     ATTACHMENT_SAVE_ERROR: 'ATTACHMENT_SAVE_ERROR',
@@ -140,6 +141,24 @@ export class OutlookBridgeStressedError extends OutlookMcpError {
             `Run \`~/.local/bin/outlook-safe-restart.sh\` to recover, ` +
             `then retry. The script's safety guards will refuse if a draft ` +
             `is open.`);
+    }
+}
+/**
+ * Thrown by predictive guards that refuse an operation based on its INPUTS
+ * rather than current bridge state. The canonical case is an unscoped
+ * `searchEmails` call (no `folder_id`) against a mailbox with tens of
+ * thousands of messages — Outlook would need to scan every message in every
+ * folder, which has been empirically shown to destabilize the AppleScript
+ * bridge in a single call (verified 2026-05-12).
+ *
+ * Structurally different from BRIDGE_STRESSED: that means "the bridge is
+ * currently degraded"; QUERY_REFUSED means "this operation is known to be
+ * dangerous regardless of current state — narrow it before retrying."
+ */
+export class OutlookQueryRefusedError extends OutlookMcpError {
+    code = ErrorCode.OUTLOOK_QUERY_REFUSED;
+    constructor(operation, reason, suggestion) {
+        super(`Refused ${operation}: ${reason}. ${suggestion}`);
     }
 }
 // =============================================================================
