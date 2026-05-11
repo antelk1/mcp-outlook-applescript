@@ -7,6 +7,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) server for Microsof
 - **AppleScript backend** — works with classic Outlook for Mac, no network or authentication required
 - **49 tools** — full coverage of mail, calendar, contacts, tasks, and notes
 - **Approval system** — destructive operations (delete, move, junk) require a two-step prepare/confirm flow
+- **Bridge protection** — adaptive inter-call throttle, folder-list TTL cache, and a `BRIDGE_STRESSED` safety brake reduce stress on Outlook's AppleScript scripting bridge under sustained MCP usage. See `CLAUDE.md` for details.
 - **Zero native dependencies** — pure TypeScript + AppleScript, no C++ compilation needed
 
 ### Available Tools

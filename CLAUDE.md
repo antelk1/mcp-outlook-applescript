@@ -28,6 +28,8 @@ src/                                 # 34 TypeScript files
 ├── index.ts                         # MCP server entry point, tool dispatch
 ├── applescript/                     # AppleScript backend
 │   ├── executor.ts                  #   osascript runner, escapeForAppleScript()
+│   ├── throttle.ts                  #   adaptive inter-call pacing + bridge-state classifier
+│   ├── cache.ts                     #   generic TTL cache (folder list, etc.)
 │   ├── scripts.ts                   #   AppleScript templates (pure functions)
 │   ├── parser.ts                    #   delimiter-based output parser
 │   ├── repository.ts                #   IRepository implementation
@@ -97,9 +99,34 @@ Destructive operations (delete, move, archive, junk, empty folder) use a two-ste
 
 Token state is in-memory only (`ApprovalTokenManager`). Expired tokens are garbage-collected when the store exceeds 100 entries.
 
+### Bridge protection (added 2026-05-12)
+
+Outlook for Mac's AppleScript scripting bridge degrades under dense bursts of AppleEvents. A typical `search_emails` call fires 500–1500 AppleEvents in ~30s; sustained MCP usage was empirically observed to kill the bridge in 7h (vs the documented 4–12d for normal usage). Three cooperating mechanisms in this codebase reduce the load and surface degradation cleanly:
+
+1. **Adaptive throttle** (`applescript/throttle.ts`)
+   - Module-level rolling window of last 10 AppleScript call latencies
+   - Classifies bridge state from p95 latency: `healthy` (<500ms) / `normal` (<1000ms) / `stressed` (<2000ms) / `degraded` (≥2000ms)
+   - Enforces a minimum inter-call gap that widens with stress: 100ms healthy → 1000ms degraded
+   - Implemented with `Atomics.wait` on a SharedArrayBuffer — sync sleep, no CPU burn, no subprocess fork; lets the executor stay synchronous all the way up
+   - The `skipThrottle: true` option exists for internal probes (warmup, `isOutlookRunning`) that shouldn't pollute the bridge-stress window or take a throttle slot
+
+2. **TTL folder cache** (`applescript/cache.ts` + `repository.ts`)
+   - Folder list cached for 5 minutes (extended from prior 30s); folders rarely change so repeat reads serve from memory
+   - Invalidated on `createFolder` / `deleteFolder` / `renameFolder` / `moveFolder`
+   - Generic `TtlCache<T>` is available for future caches if needed
+
+3. **Safety brake** (`gateExpensive()` in `repository.ts`, `OutlookBridgeStressedError`)
+   - At the `degraded` tier the throttle widens AND the heavy read methods (`listEmails` / `listUnreadEmails` / `searchEmails` / `searchEmailsInFolder`) refuse to execute
+   - Refusal throws `OutlookBridgeStressedError` with a recovery hint: run `outlook-safe-restart.sh` (the operator's watchdog script) rather than retry
+   - This is the safety brake — it surfaces a structured signal BEFORE a heavy call pushes Outlook over the edge into -1712 territory, while a graceful Outlook quit is still possible
+
+The warmup query in `executeAppleScriptWithRetry` was deliberately chosen as `count of messages of outbox` (the same probe used by the watchdog script). The earlier `return name` was app-metadata-only and could falsely pass while the message store was hung — verified empirically when window enumeration succeeded but `count of messages of outbox` returned -1712 simultaneously.
+
 ### Error handling
 
-All errors extend `OutlookMcpError` (in `utils/errors.ts`) which carries a structured `ErrorCode`. The `handle()` wrapper in `index.ts` catches all errors and returns `{ text, isError: true }` with `CODE: message` format. Error categories: `OUTLOOK_NOT_RUNNING`, `APPLESCRIPT_PERMISSION_DENIED`, `APPLESCRIPT_TIMEOUT`, `APPLESCRIPT_ERROR`, `NOT_FOUND`, `VALIDATION_ERROR`, `APPROVAL_*`, `ATTACHMENT_*`, `MAIL_SEND_ERROR`.
+All errors extend `OutlookMcpError` (in `utils/errors.ts`) which carries a structured `ErrorCode`. The `handle()` wrapper in `index.ts` catches all errors and returns `{ text, isError: true }` with `CODE: message` format. Error categories: `OUTLOOK_NOT_RUNNING`, `APPLESCRIPT_PERMISSION_DENIED`, `APPLESCRIPT_TIMEOUT`, `APPLESCRIPT_ERROR`, `OUTLOOK_BRIDGE_STRESSED`, `NOT_FOUND`, `VALIDATION_ERROR`, `APPROVAL_*`, `ATTACHMENT_*`, `MAIL_SEND_ERROR`.
+
+`OUTLOOK_BRIDGE_STRESSED` is structurally different from `APPLESCRIPT_TIMEOUT`: timeout means "this specific call took too long"; stressed means "the adaptive throttle classifies the bridge as degraded and is refusing further expensive operations before the bridge dies completely." Callers should treat it as actionable — recovery is via the watchdog/manual Outlook restart, not retry.
 
 ### Delimiter-based output protocol
 
