@@ -6,7 +6,7 @@ import { createEmailPath, createEventPath, createContactPath, createTaskPath, cr
 import type { IWriteableRepository, FolderRow, EmailRow, EventRow, ContactRow, TaskRow, NoteRow } from '../database/repository.js';
 import type { AppleScriptFolderRow, AppleScriptCalendarRow, AppleScriptEmailRow, AppleScriptEventRow, AppleScriptContactRow, AppleScriptTaskRow, AppleScriptNoteRow } from './parser.js';
 import { TtlCache } from './cache.js';
-import { isExpensiveOperationAllowed, currentP95 } from './throttle.js';
+import { isExpensiveOperationAllowed, currentMedianLatency } from './throttle.js';
 import { OutlookBridgeStressedError, OutlookQueryRefusedError } from '../utils/errors.js';
 
 // Default search folders cache (60 min TTL). The user's primary inbox and
@@ -38,7 +38,7 @@ interface DefaultSearchFolders {
  */
 function gateExpensive(operation: string): void {
     if (!isExpensiveOperationAllowed()) {
-        throw new OutlookBridgeStressedError(currentP95(), operation);
+        throw new OutlookBridgeStressedError(currentMedianLatency(), operation);
     }
 }
 

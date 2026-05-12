@@ -4,7 +4,7 @@ import * as parser from './parser.js';
 import { appleTimestampToIso, isoToAppleTimestamp } from '../utils/dates.js';
 import { createEmailPath, createEventPath, createContactPath, createTaskPath, createNotePath, } from './content-readers.js';
 import { TtlCache } from './cache.js';
-import { isExpensiveOperationAllowed, currentP95 } from './throttle.js';
+import { isExpensiveOperationAllowed, currentMedianLatency } from './throttle.js';
 import { OutlookBridgeStressedError, OutlookQueryRefusedError } from '../utils/errors.js';
 // Default search folders cache (60 min TTL). The user's primary inbox and
 // sent-items folder IDs are effectively static within a session; resolving
@@ -28,7 +28,7 @@ const LARGE_FOLDER_THRESHOLD = 50_000;
  */
 function gateExpensive(operation) {
     if (!isExpensiveOperationAllowed()) {
-        throw new OutlookBridgeStressedError(currentP95(), operation);
+        throw new OutlookBridgeStressedError(currentMedianLatency(), operation);
     }
 }
 // Folder list cache (5 min TTL). Folders rarely change — extending from the

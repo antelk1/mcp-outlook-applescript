@@ -135,12 +135,17 @@ export class AppleScriptError extends OutlookMcpError {
  */
 export class OutlookBridgeStressedError extends OutlookMcpError {
     code = ErrorCode.OUTLOOK_BRIDGE_STRESSED;
-    constructor(p95Ms, operation) {
-        super(`Outlook AppleScript bridge is degraded ` +
-            `(rolling p95 latency ${p95Ms}ms). Refused: ${operation}. ` +
-            `Run \`~/.local/bin/outlook-safe-restart.sh\` to recover, ` +
-            `then retry. The script's safety guards will refuse if a draft ` +
-            `is open.`);
+    constructor(medianMs, operation) {
+        super(`Outlook AppleScript bridge looks degraded ` +
+            `(rolling median latency ${medianMs}ms over recent calls). ` +
+            `Refused: ${operation}. ` +
+            `Diagnose first: \`~/.local/bin/outlook-safe-restart.sh --check\` ` +
+            `runs an independent probe. If --check says healthy, the MCP's ` +
+            `in-memory state is stale — restart Claude Code to clear it ` +
+            `(or wait up to 5 minutes for the rolling window to age out). ` +
+            `If --check says degraded, run \`outlook-safe-restart.sh\` (no args) ` +
+            `to safely restart Outlook — the safety guards will refuse if a ` +
+            `draft is open.`);
     }
 }
 /**

@@ -23,18 +23,31 @@
  *
  * 2. **Adaptive backoff** — record per-call latency in a rolling window with
  *    time-decay (samples older than 5 minutes are excluded from classification
- *    so a single old slow call doesn't dominate p95 forever), classify bridge
- *    health (healthy/normal/stressed/degraded), and at the degraded tier
- *    refuse expensive operations entirely. This is the safety brake: it
- *    surfaces a clear `OUTLOOK_BRIDGE_STRESSED` error to callers BEFORE the
- *    bridge dies completely, while a graceful restart is still possible.
+ *    so a single old slow call doesn't dominate the metric forever), classify
+ *    bridge health (healthy/normal/stressed/degraded) from the **median** of
+ *    recent samples, and at the degraded tier refuse expensive operations
+ *    entirely. This is the safety brake: it surfaces a clear
+ *    `OUTLOOK_BRIDGE_STRESSED` error to callers BEFORE the bridge dies
+ *    completely, while a graceful restart is still possible.
+ *
+ * ## Why median, not p95
+ *
+ * An earlier version used `p95()` with `idx = floor(N * 0.95)`. For N ≤ 20
+ * that math returns `samples[N-1]` — i.e., the maximum, not the 95th
+ * percentile. One slow call (say a 13s cold-start search) set the metric to
+ * its own value for the full 5-minute decay window and refused everything,
+ * even when 9 subsequent calls were fast. Verified 2026-05-12.
+ *
+ * Median is the correct metric for "is the bridge typically slow right now?":
+ * one outlier moves it by zero, sustained degradation moves it sharply.
+ * Cold-start latency doesn't trigger refusals; genuine bridge stress does.
  *
  * ## State machine
  *
- *   healthy   (p95 < 500ms)   →  100ms throttle, no refusals
- *   normal    (p95 < 1000ms)  →  200ms throttle, no refusals
- *   stressed  (p95 < 2000ms)  →  500ms throttle, no refusals
- *   degraded  (p95 ≥ 2000ms)  →  1000ms throttle, refuse expensive ops
+ *   healthy   (median < 500ms)   →  100ms throttle, no refusals
+ *   normal    (median < 1000ms)  →  200ms throttle, no refusals
+ *   stressed  (median < 2000ms)  →  500ms throttle, no refusals
+ *   degraded  (median ≥ 2000ms)  →  1000ms throttle, refuse expensive ops
  *
  * Thresholds chosen empirically: a fresh Outlook bridge probes at 90–160ms;
  * a 4d-uptime bridge probes at 1–3s; a degenerate bridge probes at 2+ s and
@@ -83,11 +96,16 @@ const STATE_CONFIG: Record<BridgeState, ThrottleConfig> = {
     degraded: { throttleMs: 1000, refuseExpensive: true  },
 };
 
-function p95(samples: number[]): number {
+function median(samples: number[]): number {
     if (samples.length === 0) return 0;
     const sorted = [...samples].sort((a, b) => a - b);
-    const idx = Math.floor(sorted.length * 0.95);
-    return sorted[Math.min(idx, sorted.length - 1)] ?? 0;
+    const mid = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 === 1) {
+        return sorted[mid] ?? 0;
+    }
+    const lo = sorted[mid - 1] ?? 0;
+    const hi = sorted[mid] ?? 0;
+    return (lo + hi) / 2;
 }
 
 function recentLatencies(): number[] {
@@ -95,24 +113,24 @@ function recentLatencies(): number[] {
     return latencyWindow.filter(s => s.timestamp >= cutoff).map(s => s.ms);
 }
 
-function classifyBridgeState(p95Latency: number, sampleCount: number): BridgeState {
+function classifyBridgeState(medianLatency: number, sampleCount: number): BridgeState {
     // With fewer than 3 *recent* samples we can't classify reliably — default
     // to normal. This means a fresh session doesn't get unnecessary throttle,
     // and stale samples don't cause persistent false-positive degradation.
     if (sampleCount < 3) return 'normal';
-    if (p95Latency < 500) return 'healthy';
-    if (p95Latency < 1000) return 'normal';
-    if (p95Latency < 2000) return 'stressed';
+    if (medianLatency < 500) return 'healthy';
+    if (medianLatency < 1000) return 'normal';
+    if (medianLatency < 2000) return 'stressed';
     return 'degraded';
 }
 
 export function currentBridgeState(): BridgeState {
     const recent = recentLatencies();
-    return classifyBridgeState(p95(recent), recent.length);
+    return classifyBridgeState(median(recent), recent.length);
 }
 
-export function currentP95(): number {
-    return p95(recentLatencies());
+export function currentMedianLatency(): number {
+    return median(recentLatencies());
 }
 
 export function currentThrottleMs(): number {
@@ -152,7 +170,7 @@ export function bridgeStateSnapshot() {
     const recent = recentLatencies();
     return {
         state,
-        p95LatencyMs: p95(recent),
+        medianLatencyMs: median(recent),
         recentSampleCount: recent.length,
         totalSampleCount: latencyWindow.length,
         windowCapacity: WINDOW_CAPACITY,
