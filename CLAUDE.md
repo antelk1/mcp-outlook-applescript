@@ -116,10 +116,11 @@ Outlook for Mac's AppleScript scripting bridge degrades under dense bursts of Ap
    - Invalidated on `createFolder` / `deleteFolder` / `renameFolder` / `moveFolder`
    - Generic `TtlCache<T>` is available for future caches if needed
 
-3. **Safety brake** (`gateExpensive()` in `repository.ts`, `OutlookBridgeStressedError`)
-   - At the `degraded` tier the throttle widens AND the heavy read methods (`listEmails` / `listUnreadEmails` / `searchEmails` / `searchEmailsInFolder`) refuse to execute
-   - Refusal throws `OutlookBridgeStressedError` with a recovery hint: run `outlook-safe-restart.sh` (the operator's watchdog script) rather than retry
-   - This is the safety brake — it surfaces a structured signal BEFORE a heavy call pushes Outlook over the edge into -1712 territory, while a graceful Outlook quit is still possible
+3. **Safety brake with live cross-check** (`gateExpensive()` in `repository.ts`, `OutlookBridgeStressedError`)
+   - At the `degraded` tier the throttle widens AND the heavy read methods (`listEmails` / `listUnreadEmails` / `searchEmails` / `searchEmailsInFolder`) want to refuse
+   - **Before** actually refusing, `gateExpensive` runs a live `count of messages of outbox` ground-truth probe (cheap, ~100-200ms on a healthy bridge). If the probe is <500ms, the rolling window was holding stale evidence (commonly: a heavy `whose` query against a large folder, which is naturally slow but doesn't mean the bridge is broken). The window is cleared and seeded with the fresh probe, and the operation proceeds.
+   - **Only if both** the rolling median AND the live probe agree on degradation does `OutlookBridgeStressedError` actually fire. The error message reports both numbers so callers see the cross-check happened.
+   - This eliminates the failure mode observed 2026-05-13 in rewards_advisor: MCP refused with 29.8s rolling median while the watchdog probe at the same moment returned 170ms — the bridge was actually healthy, but the window was stale from earlier heavy queries.
 
 The warmup query in `executeAppleScriptWithRetry` was deliberately chosen as `count of messages of outbox` (the same probe used by the watchdog script). The earlier `return name` was app-metadata-only and could falsely pass while the message store was hung — verified empirically when window enumeration succeeded but `count of messages of outbox` returned -1712 simultaneously.
 

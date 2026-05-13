@@ -1,4 +1,4 @@
-import { executeAppleScriptOrThrow } from './executor.js';
+import { executeAppleScript, executeAppleScriptOrThrow } from './executor.js';
 import * as scripts from './scripts.js';
 import * as parser from './parser.js';
 import { appleTimestampToIso, isoToAppleTimestamp } from '../utils/dates.js';
@@ -6,8 +6,19 @@ import { createEmailPath, createEventPath, createContactPath, createTaskPath, cr
 import type { IWriteableRepository, FolderRow, EmailRow, EventRow, ContactRow, TaskRow, NoteRow } from '../database/repository.js';
 import type { AppleScriptFolderRow, AppleScriptCalendarRow, AppleScriptEmailRow, AppleScriptEventRow, AppleScriptContactRow, AppleScriptTaskRow, AppleScriptNoteRow } from './parser.js';
 import { TtlCache } from './cache.js';
-import { isExpensiveOperationAllowed, currentMedianLatency } from './throttle.js';
+import { isExpensiveOperationAllowed, currentMedianLatency, clearWindow, recordLatency } from './throttle.js';
 import { OutlookBridgeStressedError, OutlookQueryRefusedError } from '../utils/errors.js';
+
+/**
+ * Cheap "ground-truth" query for confirming bridge health. Same shape as the
+ * watchdog script's probe — touches Outlook's message store (not just app
+ * metadata), so it actually exercises the path that degrades. On a healthy
+ * bridge it returns in <200ms; on a stuck bridge it times out at -1712.
+ */
+const GROUND_TRUTH_PROBE_QUERY = 'tell application "Microsoft Outlook" to count of messages of outbox';
+const GROUND_TRUTH_PROBE_TIMEOUT_MS = 2000;
+/** Probe latencies under this threshold count as "bridge is actually healthy". */
+const GROUND_TRUTH_PROBE_HEALTHY_MS = 500;
 
 // Default search folders cache (60 min TTL). The user's primary inbox and
 // sent-items folder IDs are effectively static within a session; resolving
@@ -31,15 +42,49 @@ interface DefaultSearchFolders {
 }
 
 /**
- * Refuse expensive operations when the bridge is degraded (rolling p95 latency
- * ≥ 2000ms). This is the safety brake: instead of letting another heavy call
- * push Outlook over the edge into -1712 territory, we surface a structured
- * error that tells the caller to run the recovery script.
+ * Refuse expensive operations when the bridge is degraded — but verify against
+ * a live ground-truth probe before refusing, so we don't false-positive on
+ * stale evidence.
+ *
+ * The rolling median can stay "degraded" for up to 5 minutes after a single
+ * heavy `whose` query (which is naturally slow on large folders) inflates the
+ * window. The independent watchdog probe meanwhile shows the bridge is fine
+ * because it queries cheap metadata. Without the live re-check here, expensive
+ * calls would be refused for minutes based on already-disproved evidence
+ * (verified 2026-05-13 in the rewards_advisor session — MCP refused with
+ * 29.8s rolling median, watchdog probe at the same instant returned 170ms).
+ *
+ * Flow:
+ * 1. Median says healthy/normal/stressed → allow immediately (fast path)
+ * 2. Median says degraded → run a cheap `count of messages of outbox` probe
+ *    a. Probe fast (<500ms) → bridge is actually healthy; clear stale window
+ *       and allow the operation. Seed with the fresh probe sample so future
+ *       classifications use post-recovery data.
+ *    b. Probe slow or errored → degradation is real; refuse with both numbers
+ *       in the error so the caller knows we cross-checked.
  */
 function gateExpensive(operation: string): void {
-    if (!isExpensiveOperationAllowed()) {
-        throw new OutlookBridgeStressedError(currentMedianLatency(), operation);
+    if (isExpensiveOperationAllowed()) return;
+
+    const probeStart = Date.now();
+    const probe = executeAppleScript(GROUND_TRUTH_PROBE_QUERY, {
+        timeoutMs: GROUND_TRUTH_PROBE_TIMEOUT_MS,
+        skipThrottle: true,
+    });
+    const probeMs = Date.now() - probeStart;
+
+    if (probe.success && probeMs < GROUND_TRUTH_PROBE_HEALTHY_MS) {
+        // Bridge is genuinely healthy. The window held stale evidence
+        // (probably one or two slow `whose` queries). Reset it and seed
+        // with the fresh probe sample so future classifications use
+        // post-recovery data.
+        clearWindow();
+        recordLatency(probeMs);
+        return;
     }
+
+    // Both rolling median AND live probe confirm degradation. Refuse.
+    throw new OutlookBridgeStressedError(currentMedianLatency(), probeMs, probe.success, operation);
 }
 
 // Folder list cache (5 min TTL). Folders rarely change — extending from the

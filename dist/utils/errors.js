@@ -135,17 +135,17 @@ export class AppleScriptError extends OutlookMcpError {
  */
 export class OutlookBridgeStressedError extends OutlookMcpError {
     code = ErrorCode.OUTLOOK_BRIDGE_STRESSED;
-    constructor(medianMs, operation) {
-        super(`Outlook AppleScript bridge looks degraded ` +
-            `(rolling median latency ${medianMs}ms over recent calls). ` +
+    constructor(medianMs, livProbeMs, livProbeSucceeded, operation) {
+        const probeText = livProbeSucceeded
+            ? `live probe took ${livProbeMs}ms`
+            : `live probe errored after ${livProbeMs}ms (likely -1712 AppleEvent timeout)`;
+        super(`Outlook AppleScript bridge is genuinely degraded. ` +
+            `Cross-checked: rolling median ${medianMs}ms over recent calls AND ${probeText}. ` +
             `Refused: ${operation}. ` +
-            `Diagnose first: \`~/.local/bin/outlook-safe-restart.sh --check\` ` +
-            `runs an independent probe. If --check says healthy, the MCP's ` +
-            `in-memory state is stale — restart Claude Code to clear it ` +
-            `(or wait up to 5 minutes for the rolling window to age out). ` +
-            `If --check says degraded, run \`outlook-safe-restart.sh\` (no args) ` +
-            `to safely restart Outlook — the safety guards will refuse if a ` +
-            `draft is open.`);
+            `Run \`~/.local/bin/outlook-safe-restart.sh\` to safely restart Outlook ` +
+            `— the script's safety guards will refuse if a draft is open. ` +
+            `(Note: this error already accounts for stale rolling-window state — the MCP ` +
+            `ran an independent live probe before refusing.)`);
     }
 }
 /**

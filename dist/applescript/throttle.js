@@ -144,6 +144,21 @@ export function recordLatency(ms) {
         latencyWindow.shift();
     }
 }
+/**
+ * Empties the rolling window entirely. Called after a successful ground-truth
+ * health probe confirms the bridge is actually healthy despite the window
+ * suggesting otherwise — clearing prevents the next call from refusing on
+ * already-disproved evidence. The window rebuilds naturally from subsequent
+ * real-call latencies.
+ *
+ * Use case: when `gateExpensive` is about to refuse, it runs a cheap probe
+ * first. If the probe is fast, the window's slow samples are stale (probably
+ * dominated by genuinely-heavy queries against large folders, not bridge
+ * degradation). Clearing lets the next call through.
+ */
+export function clearWindow() {
+    latencyWindow.length = 0;
+}
 export function bridgeStateSnapshot() {
     const state = currentBridgeState();
     const recent = recentLatencies();
