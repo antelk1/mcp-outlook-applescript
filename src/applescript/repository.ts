@@ -221,6 +221,22 @@ export function deduplicateEmailRows(rows: EmailRow[]): EmailRow[] {
 }
 
 /**
+ * Case-insensitive containment check against subject, sender display name, and
+ * sender email. Used by the date-first search path to filter results in TS
+ * after AppleScript has done the cheap date predicate. Matches the original
+ * Phase 1 + Phase 2 semantics (subject match OR sender match) in a single pass.
+ */
+export function applySubjectSenderFilter(rows: EmailRow[], query: string): EmailRow[] {
+    const needle = query.toLowerCase();
+    return rows.filter(r => {
+        const subject = (r.subject ?? '').toLowerCase();
+        const sender = (r.sender ?? '').toLowerCase();
+        const senderAddress = (r.senderAddress ?? '').toLowerCase();
+        return subject.includes(needle) || sender.includes(needle) || senderAddress.includes(needle);
+    });
+}
+
+/**
  * Calculate timeout for search operations, scaling with offset.
  *
  * Layering (outermost to innermost):
@@ -332,27 +348,49 @@ export class AppleScriptRepository implements IWriteableRepository {
     searchEmails(query: string, limit: number, offset: number, after?: string, before?: string, includeBodySearch?: boolean): EmailRow[] {
         const { inboxId, sentItemsId } = this.getDefaultSearchFolders();
         const folders = sentItemsId != null ? [inboxId, sentItemsId] : [inboxId];
+        const dateFirstMode = after != null || before != null;
 
         const merged: EmailRow[] = [];
         for (const folderId of folders) {
             this.gateLargeFolderSearch(folderId, after, before, `searchEmails(query="${query}") on default folder ${folderId}`);
             gateExpensive(`searchEmails(query="${query}", folder=${folderId}, limit=${limit})`);
-            const script = scripts.searchMessages(query, folderId, limit, offset, after, before, includeBodySearch);
+            // In date-first mode the AppleScript template does NOT apply offset/limit
+            // (it walks all date-matched messages up to DATE_FIRST_MAX_SCAN), so pass
+            // 0/0 here — TS applies pagination after subject/sender filtering.
+            const asLimit = dateFirstMode ? 0 : limit;
+            const asOffset = dateFirstMode ? 0 : offset;
+            const script = scripts.searchMessages(query, folderId, asLimit, asOffset, after, before, includeBodySearch);
             const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
-            merged.push(...parser.parseEmails(output).map(toEmailRow));
+            let rows = parser.parseEmails(output).map(toEmailRow);
+            if (dateFirstMode) {
+                rows = applySubjectSenderFilter(rows, query);
+            }
+            merged.push(...rows);
         }
 
         const deduped = deduplicateEmailRows(merged);
         deduped.sort((a, b) => (Number(b.timeReceived) || 0) - (Number(a.timeReceived) || 0));
-        return deduped.slice(0, limit);
+        // Apply offset+limit here: in date-first mode we deferred pagination from
+        // AppleScript; in subject-first mode AppleScript already applied them but
+        // slicing to `limit` is harmless if we're already at or under limit.
+        return deduped.slice(offset, offset + limit);
     }
 
     searchEmailsInFolder(folderId: number, query: string, limit: number, offset: number, after?: string, before?: string, includeBodySearch?: boolean): EmailRow[] {
         this.gateLargeFolderSearch(folderId, after, before, `searchEmailsInFolder(folder=${folderId}, query="${query}")`);
         gateExpensive(`searchEmailsInFolder(folder=${folderId}, query="${query}", limit=${limit})`);
-        const script = scripts.searchMessages(query, folderId, limit, offset, after, before, includeBodySearch);
+        const dateFirstMode = after != null || before != null;
+        const asLimit = dateFirstMode ? 0 : limit;
+        const asOffset = dateFirstMode ? 0 : offset;
+        const script = scripts.searchMessages(query, folderId, asLimit, asOffset, after, before, includeBodySearch);
         const output = executeAppleScriptOrThrow(script, { timeoutMs: searchTimeoutMs(offset) });
-        return deduplicateEmailRows(parser.parseEmails(output).map(toEmailRow));
+        let rows = parser.parseEmails(output).map(toEmailRow);
+        if (dateFirstMode) {
+            rows = applySubjectSenderFilter(rows, query);
+            rows.sort((a, b) => (Number(b.timeReceived) || 0) - (Number(a.timeReceived) || 0));
+            rows = rows.slice(offset, offset + limit);
+        }
+        return deduplicateEmailRows(rows);
     }
 
     getEmail(id: number): EmailRow | undefined {

@@ -591,26 +591,33 @@ describe('Date filtering in listMessages', () => {
 });
 
 describe('Date filtering in searchMessages', () => {
-  it('extends whose clause with date filter in phase 1', () => {
+  it('uses date-first whose clause when after filter is provided (no subject in whose)', () => {
+    // Date-first strategy (2026-05-14): when a date filter is present, the whose
+    // clause contains ONLY date predicates. Subject/sender matching is deferred
+    // to TypeScript (applySubjectSenderFilter). This avoids the catastrophic
+    // perf trap of `whose subject contains X` on medium folders.
     const script = searchMessages('test', null, 10, 0, '2025-06-01T00:00:00Z');
-    // Phase 1 whose clause should include both subject and date
-    expect(script).toContain('subject contains "test" and time received ≥ afterDate');
+    expect(script).toContain('whose time received ≥ afterDate');
+    // Subject is NOT in the AppleScript whose clause — it's filtered TS-side.
+    expect(script).not.toContain('subject contains "test"');
+    // No phase 2 sender loop in date-first mode — sender data is on every row.
+    expect(script).not.toContain('phase2');
   });
 
-  it('includes date check in phase 2 sender loop', () => {
+  it('combines both after and before in a single date-only whose clause', () => {
     const script = searchMessages('test', null, 10, 0, '2025-01-01T00:00:00Z', '2025-12-31T23:59:59Z');
-    expect(script).toContain('mDateObj < afterDate');
-    expect(script).toContain('mDateObj > beforeDate');
+    expect(script).toContain('time received ≥ afterDate and time received ≤ beforeDate');
+    expect(script).not.toContain('subject contains "test"');
   });
 
-  it('works without date filter (backward compatible)', () => {
+  it('works without date filter (backward compatible — subject-first two-phase strategy)', () => {
     const script = searchMessages('test', null, 10);
     expect(script).toContain('whose subject contains "test"');
     expect(script).not.toContain('afterDate');
     expect(script).not.toContain('beforeDate');
   });
 
-  it('uses native offset in AppleScript (startIdx/endIdx)', () => {
+  it('uses native offset in AppleScript (startIdx/endIdx) when no date filter', () => {
     const script = searchMessages('test', null, 10, 25);
     expect(script).toContain('set skipCount to 25');
     expect(script).toContain('set phase1Start to skipCount + 1');

@@ -271,6 +271,72 @@ end tell
  */
 const SENDER_SCAN_LIMIT = 50;
 /**
+ * When a date filter is provided to `searchMessages`, we use the date-first
+ * strategy: do the date filter in AppleScript (Outlook handles `whose time
+ * received >=` predicates efficiently) and defer subject/sender matching to
+ * TypeScript. To avoid runaway walks, cap the AppleScript-side iteration at
+ * this many messages. 500 messages × ~30ms per field extraction ≈ 15s,
+ * comfortably under the 55s AS-internal timeout. Date-bounded queries that
+ * match more messages than this should narrow the date range.
+ */
+const DATE_FIRST_MAX_SCAN = 500;
+/**
+ * Date-first AppleScript template for `searchMessages`. Used whenever the
+ * caller provides an after/before date filter.
+ *
+ * Strategy:
+ *   1. AppleScript: select messages by date predicate only (cheap in Outlook).
+ *   2. Walk up to DATE_FIRST_MAX_SCAN of them, extract id/subject/sender/date.
+ *   3. Return ALL extracted rows — TypeScript filters for subject/sender
+ *      containment via `applySubjectSenderFilter` before applying offset/limit.
+ *
+ * No Phase 2 sender loop is needed here: the walk already pulls sender data
+ * for every date-matched message, so TS can do both subject AND sender match
+ * filtering on the same result set.
+ *
+ * Body search (`include_body_search=true`) is still TypeScript-side via a
+ * separate get_email path, NOT extended into this template — body reads are
+ * the slowest AppleScript operation (~100ms per message) and would dominate
+ * the 55s budget on any non-trivial result set.
+ */
+function buildDateFirstSearchScript(_escapedQuery, folderClause, after, before, _includeBodySearch) {
+    let dateVarBlock = '';
+    const dateConds = [];
+    if (after != null) {
+        dateVarBlock += `  ${buildAppleScriptDateVar('afterDate', after)}\n`;
+        dateConds.push('time received ≥ afterDate');
+    }
+    if (before != null) {
+        dateVarBlock += `  ${buildAppleScriptDateVar('beforeDate', before)}\n`;
+        dateConds.push('time received ≤ beforeDate');
+    }
+    const whoseClause = dateConds.join(' and ');
+    return `
+tell application "Microsoft Outlook"
+  with timeout of 55 seconds
+${dateVarBlock}    set output to ""
+    set dateMatches to (messages ${folderClause} whose ${whoseClause})
+    set scanCount to count of dateMatches
+    if scanCount > ${DATE_FIRST_MAX_SCAN} then set scanCount to ${DATE_FIRST_MAX_SCAN}
+    repeat with i from 1 to scanCount
+      try
+        set m to item i of dateMatches
+        set mId to id of m
+        set mSubject to subject of m
+${SENDER_BLOCK}
+${DATE_BLOCK}
+        set mRead to is read of m
+        set mPreview to ""
+${FLAG_STATUS_BLOCK}
+        set output to output & ${MESSAGE_SUMMARY_OUTPUT}
+      end try
+    end repeat
+    return output
+  end timeout
+end tell
+`;
+}
+/**
  * Searches messages by query.
  *
  * Uses a two-phase approach to avoid crashes on emails with unresolvable sender
@@ -293,19 +359,20 @@ export function searchMessages(query, folderId, limit, offset = 0, after, before
     const escapedQuery = escapeForAppleScript(query);
     const folderClause = folderId != null ? `of mail folder id ${folderId}` : '';
     const hasDateFilter = after != null || before != null;
-    let dateVarBlock = '';
+    // Date-first fast path: when a date filter is provided, do ONLY the date
+    // predicate in `whose` and defer subject/sender matching to TypeScript.
+    // The subject-in-`whose` pattern walks every message in the folder regardless
+    // of additional predicates and routinely times out on medium folders (~20k
+    // messages). Date-only `whose` is dramatically faster because Outlook can
+    // bound the result set efficiently. Verified 2026-05-14: the temp project
+    // lost 130s to two consecutive ETIMEDOUTs on the subject+date pattern.
     if (hasDateFilter) {
-        if (after != null)
-            dateVarBlock += `  ${buildAppleScriptDateVar('afterDate', after)}\n`;
-        if (before != null)
-            dateVarBlock += `  ${buildAppleScriptDateVar('beforeDate', before)}\n`;
+        return buildDateFirstSearchScript(escapedQuery, folderClause, after, before, includeBodySearch);
     }
-    // Build additional whose conditions for phase 1
+    let dateVarBlock = '';
+    // Build additional whose conditions for phase 1 (subject-first path,
+    // unreachable when hasDateFilter is true).
     const whoseConditions = [`subject contains "${escapedQuery}"`];
-    if (after != null)
-        whoseConditions.push('time received ≥ afterDate');
-    if (before != null)
-        whoseConditions.push('time received ≤ beforeDate');
     const whoseClause = whoseConditions.join(' and ');
     // Build date check for phase 2 (loop-based sender scan)
     let phase2DateCheck = '';
