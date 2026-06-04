@@ -18,6 +18,7 @@ export const ErrorCode = {
     ATTACHMENT_TOO_LARGE: 'ATTACHMENT_TOO_LARGE',
     ATTACHMENT_SAVE_ERROR: 'ATTACHMENT_SAVE_ERROR',
     MAIL_SEND_ERROR: 'MAIL_SEND_ERROR',
+    MAIL_SEND_INDETERMINATE: 'MAIL_SEND_INDETERMINATE',
     APPROVAL_EXPIRED: 'APPROVAL_EXPIRED',
     APPROVAL_INVALID: 'APPROVAL_INVALID',
     TARGET_CHANGED: 'TARGET_CHANGED',
@@ -204,6 +205,45 @@ export class MailSendError extends OutlookMcpError {
     code = ErrorCode.MAIL_SEND_ERROR;
     constructor(reason) {
         super(`Failed to send email: ${reason}`);
+    }
+}
+/**
+ * Thrown by the pre-send health gate when a fast ground-truth probe shows the
+ * AppleScript bridge is degraded BEFORE we attempt a send. The email was NOT
+ * composed or sent. This prevents firing a `send` into a stuck bridge, which
+ * would hang for the full Node timeout and then get SIGKILLed mid-AppleEvent —
+ * the exact sequence that corrupts the bridge for every subsequent call
+ * (incident 2026-06-05: a hand-rolled send hung 15 min and jammed the bridge).
+ * Actionable: run `~/.local/bin/outlook-safe-restart.sh`, then resend.
+ */
+export class OutlookBridgeUnhealthyError extends OutlookMcpError {
+    code = ErrorCode.OUTLOOK_BRIDGE_STRESSED;
+    constructor(operation, probeMs, probeSucceeded) {
+        const probeText = probeSucceeded
+            ? `health probe took ${probeMs}ms (healthy is <800ms)`
+            : `health probe errored after ${probeMs}ms (likely -1712 AppleEvent timeout)`;
+        super(`Refused ${operation} before attempting it: the Outlook AppleScript bridge is degraded ` +
+            `(${probeText}). The message was NOT sent and nothing was composed. ` +
+            `Run \`~/.local/bin/outlook-safe-restart.sh\` to restart Outlook (graceful quit + relaunch), ` +
+            `then resend. Do NOT retry without restarting — a send into a degraded bridge hangs and ` +
+            `corrupts it further.`);
+    }
+}
+/**
+ * Thrown when a send's AppleScript timed out (-1712) AFTER compose/send was
+ * issued. The outcome is INDETERMINATE: Outlook may have queued the message to
+ * the Outbox (and will deliver it) or may not have. Callers must NOT blindly
+ * retry — that risks a duplicate. Verify in Sent Items / Outbox first; if the
+ * message is absent, restart Outlook before resending.
+ */
+export class MailSendIndeterminateError extends OutlookMcpError {
+    code = ErrorCode.MAIL_SEND_INDETERMINATE;
+    constructor(detail) {
+        super(`Email send timed out at the AppleScript layer; the outcome is INDETERMINATE: ` +
+            `the message may or may not have been queued (${detail}). ` +
+            `Do NOT resend blindly — first check Sent Items and the Outbox for this subject/recipient. ` +
+            `If absent, run \`~/.local/bin/outlook-safe-restart.sh\` and resend; ` +
+            `if present, it will deliver and no action is needed.`);
     }
 }
 // =============================================================================

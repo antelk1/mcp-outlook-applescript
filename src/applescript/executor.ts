@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import {
     OutlookMcpError,
     ErrorCode,
+    OutlookBridgeUnhealthyError,
 } from '../utils/errors.js';
 import { recordLatency, waitForSlot } from './throttle.js';
 
@@ -166,6 +167,58 @@ end tell
     // timing pollute the bridge-stress window or take a throttle slot.
     const result = executeAppleScript(script, { skipThrottle: true });
     return result.success && result.output.toLowerCase() === 'true';
+}
+
+// =============================================================================
+// Write-path health gate
+// =============================================================================
+
+const GROUND_TRUTH_PROBE_QUERY = 'tell application "Microsoft Outlook" to count of messages of outbox';
+const WRITE_GATE_PROBE_TIMEOUT_MS = 2500;
+/** A probe slower than this (or errored) means the bridge is too degraded to safely mutate. */
+const WRITE_GATE_HEALTHY_MS = 800;
+
+export interface BridgeHealth {
+    readonly healthy: boolean;
+    readonly probeMs: number;
+    readonly probeSucceeded: boolean;
+    readonly error?: string;
+}
+
+/**
+ * Fast ground-truth probe of bridge health, mirroring the watchdog's
+ * `count of messages of outbox` (touches the message store, not just app
+ * metadata). Healthy bridges answer in <200ms; a stuck bridge errors at -1712
+ * within the 2.5s window. Skips the throttle so it never waits behind a queued
+ * slot, and skips latency recording so the probe itself doesn't move the window.
+ */
+export function probeBridgeHealth(): BridgeHealth {
+    const start = Date.now();
+    const r = executeAppleScript(GROUND_TRUTH_PROBE_QUERY, {
+        timeoutMs: WRITE_GATE_PROBE_TIMEOUT_MS,
+        skipThrottle: true,
+    });
+    const probeMs = Date.now() - start;
+    return {
+        healthy: r.success && probeMs < WRITE_GATE_HEALTHY_MS,
+        probeMs,
+        probeSucceeded: r.success,
+        ...(r.error != null && { error: r.error }),
+    };
+}
+
+/**
+ * Gate a mutating operation (send, move, delete) on a fresh health probe.
+ * Throws OutlookBridgeUnhealthyError WITHOUT attempting the mutation when the
+ * bridge is degraded — so a `send` never hangs on a stuck bridge and gets
+ * SIGKILLed mid-AppleEvent (the sequence that corrupts the bridge). This is the
+ * cheap, unconditional pre-write check; read paths use the repository's
+ * `gateExpensive` (which only probes when the rolling median already looks bad).
+ */
+export function assertBridgeHealthyForWrite(operation: string): void {
+    const h = probeBridgeHealth();
+    if (h.healthy) return;
+    throw new OutlookBridgeUnhealthyError(operation, h.probeMs, h.probeSucceeded);
 }
 
 

@@ -408,7 +408,7 @@ export function createServer(): McpServer {
     // Send Email
     // =========================================================================
 
-    server.tool('send_email', 'Send an email from Outlook with optional CC, BCC, file attachments, inline images, and HTML formatting. This action sends the email immediately and cannot be undone. Returns the sent message_id and sent_at timestamp. Use list_accounts to find account_id if sending from a non-default account. Returns an error if required fields (to, subject) are missing or if attachment file paths do not exist.',
+    server.tool('send_email', 'Send an email from Outlook with optional CC, BCC, file attachments, inline images, and HTML formatting. This action sends the email immediately and cannot be undone. Returns the sent message_id and sent_at timestamp. Use list_accounts to find account_id if sending from a non-default account. Returns an error if required fields (to, subject) are missing or if attachment file paths do not exist. RELIABILITY: a fast health probe runs first — if the AppleScript bridge is degraded the send is REFUSED before composing (error advises running ~/.local/bin/outlook-safe-restart.sh); do NOT hand-roll an osascript send instead, restart the bridge and retry this tool. If a send times out mid-flight the result is reported as INDETERMINATE — verify the message in Sent Items / Outbox (via list_emails on those folders, not search_emails, which lags) before resending to avoid duplicates.',
         SendEmailInput.shape,
         handle((args) => {
             if (mailSender == null) return errorResult('Email sending is not available');

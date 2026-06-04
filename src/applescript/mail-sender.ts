@@ -2,10 +2,18 @@ import { existsSync, writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { executeAppleScriptOrThrow } from './executor.js';
+import { executeAppleScriptOrThrow, assertBridgeHealthyForWrite, AppleScriptExecutionError } from './executor.js';
 import * as scripts from './scripts.js';
 import { parseSendEmailResult } from './parser.js';
-import { AppleScriptError, AttachmentNotFoundError, MailSendError } from '../utils/errors.js';
+import { AppleScriptError, AttachmentNotFoundError, MailSendError, MailSendIndeterminateError } from '../utils/errors.js';
+
+/**
+ * Node-level timeout for the send osascript. MUST be larger than the inner
+ * AppleScript `with timeout` (45s in scripts.sendEmail) so the AppleEvent times
+ * out cleanly (-1712) instead of Node SIGKILLing osascript mid-send — the
+ * latter corrupts the bridge for all subsequent calls.
+ */
+const SEND_NODE_TIMEOUT_MS = 60_000;
 
 /** A file attachment identified by its filesystem path and optional display name. */
 export interface Attachment {
@@ -71,6 +79,11 @@ export class AppleScriptMailSender implements IMailSender {
             }
         }
 
+        // Pre-send health gate: refuse with guidance if the bridge is degraded,
+        // BEFORE composing anything. Never fire a send into a stuck bridge — it
+        // hangs and gets SIGKILLed mid-AppleEvent, corrupting the bridge.
+        assertBridgeHealthyForWrite('send_email');
+
         // For HTML bodies, write to a temp file so AppleScript can read it
         // instead of embedding HTML in the AppleScript string literal (which
         // breaks the parser on quotes, colons, and other special chars).
@@ -102,13 +115,30 @@ export class AppleScriptMailSender implements IMailSender {
             if (params.accountId != null)
                 scriptParams = { ...scriptParams, accountId: params.accountId };
             const script = scripts.sendEmail(scriptParams);
-            const output = executeAppleScriptOrThrow(script);
+            let output: string;
+            try {
+                output = executeAppleScriptOrThrow(script, { timeoutMs: SEND_NODE_TIMEOUT_MS });
+            } catch (err) {
+                // Node killed osascript at 60s — even the 45s inner timeout
+                // didn't fire. Outcome indeterminate; do not let callers retry.
+                if (err instanceof AppleScriptExecutionError && err.errorType === 'timeout') {
+                    throw new MailSendIndeterminateError('osascript was killed at the Node 60s timeout');
+                }
+                throw err;
+            }
             const result = parseSendEmailResult(output);
             if (result == null) {
                 throw new AppleScriptError('Failed to parse send email response');
             }
             if (!result.success) {
-                throw new MailSendError(result.error ?? 'Unknown error');
+                const reason = result.error ?? 'Unknown error';
+                // Inner `with timeout` fired (-1712): the send was issued but its
+                // reply timed out, so it may or may not have queued. Signal
+                // INDETERMINATE so the caller verifies rather than blind-retrying.
+                if (/-1712|AppleEvent timed out|timed out/i.test(reason)) {
+                    throw new MailSendIndeterminateError(`AppleScript send timed out: ${reason}`);
+                }
+                throw new MailSendError(reason);
             }
             return {
                 messageId: result.messageId ?? '',

@@ -1656,9 +1656,11 @@ end tell
 export function moveMessage(messageId: number, destinationFolderId: number): string {
     return `
 tell application "Microsoft Outlook"
-  set m to message id ${messageId}
-  set targetFolder to mail folder id ${destinationFolderId}
-  move m to targetFolder
+  with timeout of 25 seconds
+    set m to message id ${messageId}
+    set targetFolder to mail folder id ${destinationFolderId}
+    move m to targetFolder
+  end timeout
   return "ok"
 end tell
 `;
@@ -1669,9 +1671,11 @@ end tell
 export function deleteMessage(messageId: number): string {
     return `
 tell application "Microsoft Outlook"
-  set m to message id ${messageId}
-  set deletedFolder to deleted items
-  move m to deletedFolder
+  with timeout of 25 seconds
+    set m to message id ${messageId}
+    set deletedFolder to deleted items
+    move m to deletedFolder
+  end timeout
   return "ok"
 end tell
 `;
@@ -1683,21 +1687,23 @@ end tell
 export function archiveMessage(messageId: number): string {
     return `
 tell application "Microsoft Outlook"
-  set m to message id ${messageId}
-  try
-    set archiveFolder to mail folder "Archive"
-    move m to archiveFolder
-  on error
-    -- Try finding by name
-    set allFolders to mail folders
-    repeat with f in allFolders
-      if name of f is "Archive" then
-        move m to f
-        return "ok"
-      end if
-    end repeat
-    error "Archive folder not found"
-  end try
+  with timeout of 25 seconds
+    set m to message id ${messageId}
+    try
+      set archiveFolder to mail folder "Archive"
+      move m to archiveFolder
+    on error
+      -- Try finding by name
+      set allFolders to mail folders
+      repeat with f in allFolders
+        if name of f is "Archive" then
+          move m to f
+          return "ok"
+        end if
+      end repeat
+      error "Archive folder not found"
+    end try
+  end timeout
   return "ok"
 end tell
 `;
@@ -1708,9 +1714,11 @@ end tell
 export function junkMessage(messageId: number): string {
     return `
 tell application "Microsoft Outlook"
-  set m to message id ${messageId}
-  set junkFolder to junk mail
-  move m to junkFolder
+  with timeout of 25 seconds
+    set m to message id ${messageId}
+    set junkFolder to junk mail
+    move m to junkFolder
+  end timeout
   return "ok"
 end tell
 `;
@@ -1829,14 +1837,16 @@ end tell
 export function emptyMailFolder(folderId: number): string {
     return `
 tell application "Microsoft Outlook"
-  set targetFolder to mail folder id ${folderId}
-  set msgs to messages of targetFolder
-  set deletedFolder to deleted items
-  repeat with m in msgs
-    try
-      move m to deletedFolder
-    end try
-  end repeat
+  with timeout of 25 seconds
+    set targetFolder to mail folder id ${folderId}
+    set msgs to messages of targetFolder
+    set deletedFolder to deleted items
+    repeat with m in msgs
+      try
+        move m to deletedFolder
+      end try
+    end repeat
+  end timeout
   return "ok"
 end tell
 `;
@@ -1890,6 +1900,12 @@ export function sendEmail(params: SendEmailParams): string {
     return `
 tell application "Microsoft Outlook"
   try
+    -- Inner AppleScript timeout MUST fire before the Node execFileSync timeout
+    -- (60s in mail-sender). Without it, a stuck \`send\` hangs until Node
+    -- SIGKILLs osascript mid-AppleEvent, which corrupts the bridge for every
+    -- subsequent call (incident 2026-06-05). On overrun this raises -1712,
+    -- which mail-sender maps to an INDETERMINATE result (verify, don't retry).
+    with timeout of 45 seconds
 ${createMessageLine}
 ${setBodyStatement}
 
@@ -1901,19 +1917,19 @@ ${accountStatement}
 ${attachmentStatements}
 ${inlineImageStatements}
 
-    -- Capture ID before send (reference becomes stale after send)
-    set msgId to "" & (id of newMessage)
-    send newMessage
+      -- Capture ID before send (reference becomes stale after send)
+      set msgId to "" & (id of newMessage)
+      send newMessage
 
-    set sentTime to current date
-    set sentISO to sentTime as «class isot» as string
+      set sentTime to current date
+      set sentISO to sentTime as «class isot» as string
 
-    -- Return success
-    set output to "{{RECORD}}success{{=}}true{{FIELD}}messageId{{=}}" & msgId & "{{FIELD}}sentAt{{=}}" & sentISO
+      set output to "{{RECORD}}success{{=}}true{{FIELD}}messageId{{=}}" & msgId & "{{FIELD}}sentAt{{=}}" & sentISO
+    end timeout
     return output
-  on error errMsg
-    -- Return failure
-    set output to "{{RECORD}}success{{=}}false{{FIELD}}error{{=}}" & errMsg
+  on error errMsg number errNum
+    -- errNum -1712 = AppleEvent timed out (inner \`with timeout\` fired)
+    set output to "{{RECORD}}success{{=}}false{{FIELD}}error{{=}}" & errMsg & " (error " & errNum & ")"
     return output
   end try
 end tell

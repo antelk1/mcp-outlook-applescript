@@ -40,10 +40,22 @@ import {
   sendEmail,
   setMessageCategories,
   createMailFolder,
+  moveMessage,
+  deleteMessage,
+  archiveMessage,
+  junkMessage,
+  emptyMailFolder,
 } from '../src/applescript/scripts.js';
 
 // executor.ts -- security-critical escaping
 import { escapeForAppleScript } from '../src/applescript/executor.js';
+
+// errors.ts -- send reliability error contracts
+import {
+  OutlookBridgeUnhealthyError,
+  MailSendIndeterminateError,
+  ErrorCode,
+} from '../src/utils/errors.js';
 
 // parser.ts exports pure parsing functions
 import {
@@ -916,6 +928,74 @@ describe('sendEmail template escaping', () => {
       bodyType: 'plain',
     });
     expect(script).toContain('plain text content:');
+  });
+});
+
+// =============================================================================
+// Send reliability hardening (incident 2026-06-05): inner timeout + error contracts
+// =============================================================================
+
+describe('sendEmail inner timeout (bridge-corruption guard)', () => {
+  const base = { to: ['test@example.com'], subject: 'x', body: 'b', bodyType: 'plain' as const };
+
+  it('wraps compose+send in an inner AppleScript `with timeout`', () => {
+    const script = sendEmail(base);
+    expect(script).toContain('with timeout of 45 seconds');
+    expect(script).toContain('end timeout');
+  });
+
+  it('still issues the send command inside the timeout block', () => {
+    const script = sendEmail(base);
+    const to = script.indexOf('with timeout of 45 seconds');
+    const send = script.indexOf('send newMessage');
+    const end = script.indexOf('end timeout');
+    expect(to).toBeGreaterThan(-1);
+    expect(send).toBeGreaterThan(to);   // send is inside the timeout block
+    expect(end).toBeGreaterThan(send);
+  });
+
+  it('captures the AppleScript error number so -1712 timeouts are detectable', () => {
+    const script = sendEmail(base);
+    expect(script).toContain('on error errMsg number errNum');
+  });
+});
+
+describe('send reliability error contracts', () => {
+  it('OutlookBridgeUnhealthyError is actionable and states the send did not happen', () => {
+    const e = new OutlookBridgeUnhealthyError('send_email', 2500, false);
+    expect(e.code).toBe(ErrorCode.OUTLOOK_BRIDGE_STRESSED);
+    expect(e.message).toContain('outlook-safe-restart.sh');
+    expect(e.message).toContain('NOT sent');
+  });
+
+  it('MailSendIndeterminateError tells the caller to verify, not blind-retry', () => {
+    const e = new MailSendIndeterminateError('AppleScript send timed out: -1712');
+    expect(e.code).toBe(ErrorCode.MAIL_SEND_INDETERMINATE);
+    expect(e.message).toContain('INDETERMINATE');
+    expect(e.message.toLowerCase()).toContain('do not resend blindly');
+  });
+});
+
+describe('heavy mutation scripts carry an inner timeout (bridge-corruption guard)', () => {
+  it('moveMessage wraps the move in `with timeout`', () => {
+    const s = moveMessage(1, 2);
+    expect(s).toContain('with timeout of 25 seconds');
+    expect(s).toContain('end timeout');
+    expect(s.indexOf('with timeout of 25 seconds')).toBeLessThan(s.indexOf('move m to'));
+  });
+  it('deleteMessage wraps the delete in `with timeout`', () => {
+    expect(deleteMessage(1)).toContain('with timeout of 25 seconds');
+  });
+  it('archiveMessage wraps the archive in `with timeout`', () => {
+    expect(archiveMessage(1)).toContain('with timeout of 25 seconds');
+  });
+  it('junkMessage wraps the junk move in `with timeout`', () => {
+    expect(junkMessage(1)).toContain('with timeout of 25 seconds');
+  });
+  it('emptyMailFolder wraps the empty loop in `with timeout`', () => {
+    const s = emptyMailFolder(9);
+    expect(s).toContain('with timeout of 25 seconds');
+    expect(s.indexOf('with timeout of 25 seconds')).toBeLessThan(s.indexOf('repeat with m'));
   });
 });
 

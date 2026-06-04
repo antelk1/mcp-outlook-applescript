@@ -1,4 +1,4 @@
-import { executeAppleScript, executeAppleScriptOrThrow } from './executor.js';
+import { executeAppleScript, executeAppleScriptOrThrow, assertBridgeHealthyForWrite } from './executor.js';
 import * as scripts from './scripts.js';
 import * as parser from './parser.js';
 import { appleTimestampToIso, isoToAppleTimestamp } from '../utils/dates.js';
@@ -546,44 +546,49 @@ export class AppleScriptRepository implements IWriteableRepository {
         }
     }
 
+    /**
+     * Run a mutating AppleScript behind the pre-write health gate. Refuses on a
+     * degraded bridge BEFORE mutating — same protection as send_email. A
+     * mutation fired into a stuck bridge hangs and gets SIGKILLed mid-AppleEvent,
+     * corrupting it for every later call (incident 2026-06-05). The heavy
+     * mutation scripts (move/delete/archive/junk/empty) also carry their own
+     * inner `with timeout` for the rare mid-op degradation case.
+     */
+    private executeMutation(operation: string, script: string): string {
+        assertBridgeHealthyForWrite(operation);
+        return executeAppleScriptOrThrow(script);
+    }
+
     moveEmail(emailId: number, destinationFolderId: number): void {
-        const script = scripts.moveMessage(emailId, destinationFolderId);
-        executeAppleScriptOrThrow(script);
+        this.executeMutation('move_email', scripts.moveMessage(emailId, destinationFolderId));
     }
 
     deleteEmail(emailId: number): void {
-        const script = scripts.deleteMessage(emailId);
-        executeAppleScriptOrThrow(script);
+        this.executeMutation('delete_email', scripts.deleteMessage(emailId));
     }
 
     archiveEmail(emailId: number): void {
-        const script = scripts.archiveMessage(emailId);
-        executeAppleScriptOrThrow(script);
+        this.executeMutation('archive_email', scripts.archiveMessage(emailId));
     }
 
     junkEmail(emailId: number): void {
-        const script = scripts.junkMessage(emailId);
-        executeAppleScriptOrThrow(script);
+        this.executeMutation('junk_email', scripts.junkMessage(emailId));
     }
 
     markEmailRead(emailId: number, isRead: boolean): void {
-        const script = scripts.setMessageReadStatus(emailId, isRead);
-        executeAppleScriptOrThrow(script);
+        this.executeMutation('mark_read', scripts.setMessageReadStatus(emailId, isRead));
     }
 
     setEmailFlag(emailId: number, flagStatus: number): void {
-        const script = scripts.setMessageFlag(emailId, flagStatus);
-        executeAppleScriptOrThrow(script);
+        this.executeMutation('set_flag', scripts.setMessageFlag(emailId, flagStatus));
     }
 
     setEmailCategories(emailId: number, categories: string[]): void {
-        const script = scripts.setMessageCategories(emailId, categories);
-        executeAppleScriptOrThrow(script);
+        this.executeMutation('set_categories', scripts.setMessageCategories(emailId, categories));
     }
 
     createFolder(name: string, parentFolderId?: number): FolderRow {
-        const script = scripts.createMailFolder(name, parentFolderId);
-        const output = executeAppleScriptOrThrow(script);
+        const output = this.executeMutation('create_folder', scripts.createMailFolder(name, parentFolderId));
         const newFolderId = parseInt(output.trim(), 10);
         this.folderListCache.invalidateAll();
         return {
@@ -599,26 +604,22 @@ export class AppleScriptRepository implements IWriteableRepository {
     }
 
     deleteFolder(folderId: number): void {
-        const script = scripts.deleteMailFolder(folderId);
-        executeAppleScriptOrThrow(script);
+        this.executeMutation('delete_folder', scripts.deleteMailFolder(folderId));
         this.folderListCache.invalidateAll();
     }
 
     renameFolder(folderId: number, newName: string): void {
-        const script = scripts.renameMailFolder(folderId, newName);
-        executeAppleScriptOrThrow(script);
+        this.executeMutation('rename_folder', scripts.renameMailFolder(folderId, newName));
         this.folderListCache.invalidateAll();
     }
 
     moveFolder(folderId: number, destinationParentId: number): void {
-        const script = scripts.moveMailFolder(folderId, destinationParentId);
-        executeAppleScriptOrThrow(script);
+        this.executeMutation('move_folder', scripts.moveMailFolder(folderId, destinationParentId));
         this.folderListCache.invalidateAll();
     }
 
     emptyFolder(folderId: number): void {
-        const script = scripts.emptyMailFolder(folderId);
-        executeAppleScriptOrThrow(script);
+        this.executeMutation('empty_folder', scripts.emptyMailFolder(folderId));
     }
 }
 
