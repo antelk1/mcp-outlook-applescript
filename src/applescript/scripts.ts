@@ -1935,3 +1935,92 @@ ${inlineImageStatements}
 end tell
 `;
 }
+
+/**
+ * Builds the AppleScript to compose an email and SAVE IT AS A DRAFT that syncs.
+ *
+ * Identical compose logic to {@link sendEmail}, but instead of \`send\` it binds the
+ * message to a real account and \`move\`s it into that account's drafts folder. This
+ * is REQUIRED for the draft to sync to other devices (iPhone): a bare
+ * \`make new outgoing message\` autosaves to the LOCAL "On My Computer" Drafts, which
+ * never uploads to the IMAP/Exchange server. Moving it into \`drafts of acct\` writes
+ * it to the server drafts folder, which syncs everywhere. (Verified 2026-06-18.)
+ *
+ * Account: \`account_id\` selects the target account; otherwise the first IMAP account.
+ */
+export function createDraft(params: SendEmailParams): string {
+    const { to, subject, body, bodyType, cc, bcc, replyTo, attachments, inlineImages, accountId, bodyFilePath } = params;
+    const escapedSubject = escapeForAppleScript(subject);
+    const toRecipients = to.map(email => `    make new recipient at newMessage with properties {email address:{address:"${escapeForAppleScript(email)}"}}`).join('\n');
+    const ccRecipients = cc != null && cc.length > 0
+        ? cc.map(email => `    make new recipient at newMessage with properties {email address:{address:"${escapeForAppleScript(email)}"}, recipient type:recipient cc}`).join('\n')
+        : '';
+    const bccRecipients = bcc != null && bcc.length > 0
+        ? bcc.map(email => `    make new recipient at newMessage with properties {email address:{address:"${escapeForAppleScript(email)}"}, recipient type:recipient bcc}`).join('\n')
+        : '';
+
+    let createMessageLine: string;
+    let setBodyStatement: string;
+    if (bodyType === 'html' && bodyFilePath != null) {
+        const escapedPath = escapeForAppleScript(bodyFilePath);
+        createMessageLine = `    set newMessage to make new outgoing message with properties {subject:"${escapedSubject}"}`;
+        setBodyStatement = `    set htmlBody to do shell script "cat " & quoted form of "${escapedPath}"\n    set content of newMessage to htmlBody`;
+    } else {
+        const escapedBody = escapeForAppleScript(body);
+        const contentProperty = bodyType === 'html'
+            ? `html content:"${escapedBody}"`
+            : `plain text content:"${escapedBody}"`;
+        createMessageLine = `    set newMessage to make new outgoing message with properties {subject:"${escapedSubject}", ${contentProperty}}`;
+        setBodyStatement = '';
+    }
+
+    const replyToStatement = replyTo != null
+        ? `    set reply to of newMessage to "${escapeForAppleScript(replyTo)}"`
+        : '';
+    const attachmentStatements = attachments != null && attachments.length > 0
+        ? attachments.map(att => `    make new attachment at newMessage with properties {file:(POSIX file "${escapeForAppleScript(att.path)}")}`).join('\n')
+        : '';
+    const inlineImageStatements = inlineImages != null && inlineImages.length > 0
+        ? inlineImages.map((img, i) => `    set inlineAttach${i} to make new attachment at newMessage with properties {file:(POSIX file "${escapeForAppleScript(img.path)}")}\n` +
+            `    try\n` +
+            `      set content id of inlineAttach${i} to "${escapeForAppleScript(img.contentId)}"\n` +
+            `    end try`).join('\n')
+        : '';
+    // Resolve the account whose (server) drafts folder we move the message into.
+    const acctResolution = accountId != null
+        ? `    set acct to account id ${accountId}`
+        : `    set acct to first imap account`;
+    return `
+tell application "Microsoft Outlook"
+  try
+    -- Inner timeout fires before the Node 60s timeout so a stuck bridge raises
+    -- -1712 cleanly instead of being SIGKILLed mid-AppleEvent (bridge-corrupting).
+    with timeout of 45 seconds
+${createMessageLine}
+${setBodyStatement}
+
+${toRecipients}
+${ccRecipients}
+${bccRecipients}
+${replyToStatement}
+${attachmentStatements}
+${inlineImageStatements}
+${acctResolution}
+
+      -- Move into the account's server drafts folder so the draft SYNCS to all
+      -- devices. A bare outgoing message autosaves to the local "On My Computer"
+      -- Drafts, which never uploads. The reference survives the move, so capture
+      -- the id afterward (that is the synced draft's id).
+      move newMessage to (drafts of acct)
+      set msgId to "" & (id of newMessage)
+
+      set output to "{{RECORD}}success{{=}}true{{FIELD}}messageId{{=}}" & msgId
+    end timeout
+    return output
+  on error errMsg number errNum
+    set output to "{{RECORD}}success{{=}}false{{FIELD}}error{{=}}" & errMsg & " (error " & errNum & ")"
+    return output
+  end try
+end tell
+`;
+}

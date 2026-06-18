@@ -255,6 +255,37 @@ export function createServer() {
         });
     }));
     // =========================================================================
+    // Create Draft (saves a SYNCING draft — does NOT send)
+    // =========================================================================
+    server.tool('create_draft', 'Compose an email and save it as a DRAFT that SYNCS to other devices (e.g. iPhone) — it is NOT sent. Use this instead of hand-rolling an osascript draft: a bare "make new outgoing message" autosaves to the LOCAL "On My Computer" Drafts which never uploads, so this tool binds the message to the account and moves it into the account\'s server Drafts folder so it syncs everywhere. Same fields as send_email (to, subject, body, body_type, cc, bcc, reply_to, attachments, inline_images, account_id); account_id selects the target account, otherwise the first IMAP account is used. Returns the saved draft message_id. RELIABILITY: a fast health probe runs first — if the AppleScript bridge is degraded the call is REFUSED before composing (error advises running ~/.local/bin/outlook-safe-restart.sh). If it times out mid-flight the result is INDETERMINATE — verify in the Drafts folder (via list_emails) before retrying to avoid a duplicate draft. Review/send the draft from Outlook or the iPhone; never auto-send.', SendEmailInput.shape, handle((args) => {
+        if (mailSender == null)
+            return errorResult('Email drafting is not available');
+        const params = SendEmailInput.parse(args);
+        const draftParams = {
+            to: params.to,
+            subject: params.subject,
+            body: params.body,
+            bodyType: params.body_type,
+            ...(params.cc != null && { cc: params.cc }),
+            ...(params.bcc != null && { bcc: params.bcc }),
+            ...(params.reply_to != null && { replyTo: params.reply_to }),
+            ...(params.attachments != null && { attachments: params.attachments }),
+            ...(params.inline_images != null && {
+                inlineImages: params.inline_images.map(img => ({
+                    path: img.path,
+                    contentId: img.content_id,
+                })),
+            }),
+            ...(params.account_id != null && { accountId: params.account_id }),
+        };
+        const draft = mailSender.createDraft(draftParams);
+        return jsonResult({
+            message_id: draft.messageId,
+            status: 'draft_saved',
+            folder: 'Drafts',
+        });
+    }));
+    // =========================================================================
     // Mailbox Organization Tools (Destructive — Two-Phase)
     // =========================================================================
     server.tool('prepare_delete_email', 'Prepare to delete an email (move to trash). Returns a preview of the email and an approval token with expiration time. Call confirm_delete_email with the token to execute the deletion. Returns an error if the email ID does not exist. The token expires after 5 minutes.', PrepareDeleteEmailInput.shape, handle((args) => jsonResult(orgTools.prepareDeleteEmail(args))));

@@ -38,6 +38,7 @@ import {
   listEvents,
   buildAppleScriptDateVar,
   sendEmail,
+  createDraft,
   setMessageCategories,
   createMailFolder,
   moveMessage,
@@ -957,6 +958,71 @@ describe('sendEmail inner timeout (bridge-corruption guard)', () => {
   it('captures the AppleScript error number so -1712 timeouts are detectable', () => {
     const script = sendEmail(base);
     expect(script).toContain('on error errMsg number errNum');
+  });
+});
+
+// =============================================================================
+// createDraft: saves a SYNCING draft (moves to account drafts) — never sends
+// =============================================================================
+
+describe('createDraft (synced draft, not send)', () => {
+  const base = { to: ['test@example.com'], subject: 'x', body: 'b', bodyType: 'plain' as const };
+
+  it('moves the message into the account drafts folder so it syncs', () => {
+    const script = createDraft(base);
+    expect(script).toContain('move newMessage to (drafts of acct)');
+  });
+
+  it('NEVER sends — no `send newMessage` command', () => {
+    const script = createDraft(base);
+    expect(script).not.toContain('send newMessage');
+  });
+
+  it('resolves the target account before moving into its drafts folder', () => {
+    const script = createDraft(base);
+    const acct = script.indexOf('set acct to');
+    const move = script.indexOf('move newMessage to (drafts of acct)');
+    expect(acct).toBeGreaterThan(-1);
+    expect(move).toBeGreaterThan(acct);   // acct is resolved before the move uses it
+  });
+
+  it('defaults to the first IMAP account when no account_id is given', () => {
+    const script = createDraft(base);
+    expect(script).toContain('set acct to first imap account');
+  });
+
+  it('targets the given account by id when account_id is provided', () => {
+    const script = createDraft({ ...base, accountId: 1 });
+    expect(script).toContain('set acct to account id 1');
+    expect(script).not.toContain('set acct to first imap account');
+  });
+
+  it('wraps compose+move in the same inner timeout guard as send', () => {
+    const script = createDraft(base);
+    expect(script).toContain('with timeout of 45 seconds');
+    expect(script).toContain('end timeout');
+    const to = script.indexOf('with timeout of 45 seconds');
+    const move = script.indexOf('move newMessage to (drafts of acct)');
+    const end = script.indexOf('end timeout');
+    expect(move).toBeGreaterThan(to);   // move is inside the timeout block
+    expect(end).toBeGreaterThan(move);
+  });
+
+  it('captures the error number so -1712 timeouts are detectable', () => {
+    const script = createDraft(base);
+    expect(script).toContain('on error errMsg number errNum');
+  });
+
+  it('escapes subject and recipients like sendEmail', () => {
+    const script = createDraft({ ...base, subject: 'He said "hi"', to: ['a@b.com'], cc: ['c@d.com'] });
+    expect(script).toContain('He said \\"hi\\"');
+    expect(script).toContain('a@b.com');
+    expect(script).toContain('c@d.com');
+  });
+
+  it('uses html content property for html bodyType', () => {
+    const script = createDraft({ ...base, body: '<h1>Hi</h1>', bodyType: 'html' });
+    expect(script).toContain('html content:');
   });
 });
 

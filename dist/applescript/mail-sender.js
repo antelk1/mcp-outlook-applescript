@@ -113,6 +113,97 @@ export class AppleScriptMailSender {
             }
         }
     }
+    /**
+     * Validates attachment paths, builds the create-draft AppleScript, executes
+     * it, and parses the result. Unlike sendEmail, this saves the message to the
+     * account's drafts folder (which syncs to other devices) instead of sending.
+     * @param params - Email composition parameters (recipients, body, attachments, etc.).
+     * @returns The saved draft's message ID.
+     * @throws AttachmentNotFoundError if any attachment or inline image path does not exist.
+     * @throws MailSendError if Outlook reports a failure saving the draft.
+     * @throws MailSendIndeterminateError if the operation times out mid-flight (verify in Drafts before retrying).
+     */
+    createDraft(params) {
+        if (params.attachments != null) {
+            for (const attachment of params.attachments) {
+                if (!existsSync(attachment.path)) {
+                    throw new AttachmentNotFoundError(attachment.path);
+                }
+            }
+        }
+        if (params.inlineImages != null) {
+            for (const image of params.inlineImages) {
+                if (!existsSync(image.path)) {
+                    throw new AttachmentNotFoundError(image.path);
+                }
+            }
+        }
+        // Same pre-write health gate as send: never fire AppleScript composing
+        // into a degraded bridge — it hangs, gets SIGKILLed, and corrupts the bridge.
+        assertBridgeHealthyForWrite('create_draft');
+        let bodyFilePath;
+        if (params.bodyType === 'html') {
+            const id = randomBytes(8).toString('hex');
+            bodyFilePath = join(tmpdir(), `mcp-outlook-html-${id}.html`);
+            writeFileSync(bodyFilePath, params.body, 'utf8');
+        }
+        try {
+            let scriptParams = {
+                to: params.to,
+                subject: params.subject,
+                body: params.body,
+                bodyType: params.bodyType,
+                ...(bodyFilePath != null && { bodyFilePath }),
+            };
+            if (params.cc != null)
+                scriptParams = { ...scriptParams, cc: params.cc };
+            if (params.bcc != null)
+                scriptParams = { ...scriptParams, bcc: params.bcc };
+            if (params.replyTo != null)
+                scriptParams = { ...scriptParams, replyTo: params.replyTo };
+            if (params.attachments != null)
+                scriptParams = { ...scriptParams, attachments: params.attachments };
+            if (params.inlineImages != null)
+                scriptParams = { ...scriptParams, inlineImages: params.inlineImages };
+            if (params.accountId != null)
+                scriptParams = { ...scriptParams, accountId: params.accountId };
+            const script = scripts.createDraft(scriptParams);
+            let output;
+            try {
+                output = executeAppleScriptOrThrow(script, { timeoutMs: SEND_NODE_TIMEOUT_MS });
+            }
+            catch (err) {
+                if (err instanceof AppleScriptExecutionError && err.errorType === 'timeout') {
+                    throw new MailSendIndeterminateError('osascript was killed at the Node 60s timeout while saving the draft — check Drafts before retrying');
+                }
+                throw err;
+            }
+            const result = parseSendEmailResult(output);
+            if (result == null) {
+                throw new AppleScriptError('Failed to parse create draft response');
+            }
+            if (!result.success) {
+                const reason = result.error ?? 'Unknown error';
+                // Inner timeout (-1712): the draft may or may not have saved/moved.
+                // Signal INDETERMINATE so the caller verifies rather than creating a duplicate.
+                if (/-1712|AppleEvent timed out|timed out/i.test(reason)) {
+                    throw new MailSendIndeterminateError(`AppleScript draft save timed out: ${reason} — check Drafts before retrying`);
+                }
+                throw new MailSendError(reason);
+            }
+            return {
+                messageId: result.messageId ?? '',
+            };
+        }
+        finally {
+            if (bodyFilePath != null) {
+                try {
+                    unlinkSync(bodyFilePath);
+                }
+                catch { /* ignore cleanup errors */ }
+            }
+        }
+    }
 }
 /** Creates a new AppleScriptMailSender instance. */
 export function createMailSender() {
